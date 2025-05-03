@@ -34,7 +34,7 @@ async def check_inactive_members():
         print("Guild not found.")
         return
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     inactive_cutoff = now - timedelta(days=90)
     kick_cutoff = now - timedelta(days=180)
     warning_channel = discord.utils.get(guild.text_channels, name=WARNING_CHANNEL_NAME)

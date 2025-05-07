@@ -88,9 +88,29 @@ async def on_command_error(ctx, error):
         await staff_channel.send(embed=embed)
     else:
         print("Staff channel not found for error reporting.")
+        
+        
+@bot.command(name="commands", help="Displays a list of all available bot commands (General role only).")
+async def list_commands(ctx):
+    if not any(role.id == GENERAL_ROLE_ID for role in ctx.author.roles):
+        await ctx.send("❌ You do not have permission to use this command.")
+        return
+
+    embed = discord.Embed(
+        title="Available Bot Commands",
+        color=discord.Color.blue()
+    )
+
+    for command in bot.commands:
+        if command.hidden:
+            continue
+        description = command.help or "No description available."
+        embed.add_field(name=f"!{command.name}", value=description, inline=False)
+
+    await ctx.send(embed=embed)
 
 
-@bot.command()
+@bot.command(help="Lists all channels the bot cannot read (due to missing permissions).")
 async def unreadable_channels(ctx):
     if not any(role.id == GENERAL_ROLE_ID for role in ctx.author.roles):
         await ctx.send("❌ You do not have permission to use this command.")
@@ -110,7 +130,7 @@ async def unreadable_channels(ctx):
         )
 
 
-@bot.command()
+@bot.command(help="Shows the last known activity date and server join date for a specific member.")
 async def lastactive(ctx, member: discord.Member):
     if not any(role.id == GENERAL_ROLE_ID for role in ctx.author.roles):
         await ctx.send("❌ You do not have permission to use this command.")
@@ -139,8 +159,8 @@ async def lastactive(ctx, member: discord.Member):
     await ctx.send(embed=embed)
 
 
-@bot.command()
-async def inactivity_report(ctx):
+@bot.command(help="Displays an inactivity report. Add '--m' to only show members near Cleaner or kick thresholds.")
+async def inactivity_report(ctx, *args):
     if not any(role.id == GENERAL_ROLE_ID for role in ctx.author.roles):
         await ctx.send("❌ You do not have permission to use this command.")
         return
@@ -148,6 +168,8 @@ async def inactivity_report(ctx):
     if not cache_ready:
         await ctx.send("⏳ Please wait, I'm still scanning activity. Try again in a few minutes.")
         return
+
+    minimal = "--m" in args
 
     guild = bot.get_guild(GUILD_ID)
     now = datetime.now(timezone.utc)
@@ -159,7 +181,8 @@ async def inactivity_report(ctx):
     cleaners_soon_kick = []
     cleaners_overdue_kick = []
     active_members = []
-    
+    cleaner_list = []
+
     print(f"Total entries in activity_cache: {len(activity_cache)}")
 
     for member in guild.members:
@@ -174,7 +197,7 @@ async def inactivity_report(ctx):
         if not last_active:
             continue  # skip if not cached to avoid long delays
         print(f"Member {member.display_name} — Cached last_active: {last_active}")
-        
+
         days_since = (now - last_active).days
         role_names = [r.name for r in member.roles]
 
@@ -184,14 +207,15 @@ async def inactivity_report(ctx):
                 cleaners_overdue_kick.append((member.display_name, abs(kick_in_days)))
             elif kick_in_days <= 14:
                 cleaners_soon_kick.append((member.display_name, kick_in_days))
-            # Cleaners who are not near kick time are not listed
+            elif not minimal:
+                cleaner_list.append((member.display_name, kick_in_days))
         else:
             cleaner_in_days = 90 - days_since
             if 0 <= cleaner_in_days <= 14:
                 nearing_inactive.append((member.display_name, cleaner_in_days))
             elif cleaner_in_days < 0:
                 overdue_cleaners.append((member.display_name, abs(cleaner_in_days)))
-            else:
+            elif not minimal:
                 active_members.append((member.display_name, f"{days_since} days ago"))
 
     desc = ""
@@ -203,6 +227,10 @@ async def inactivity_report(ctx):
     if nearing_inactive:
         desc += "\n\n**⚠️ Members nearing inactivity (Cleaner role):**\n"
         desc += "\n".join(f"• `{name}` — in `{days}` days" for name, days in nearing_inactive)
+
+    if cleaner_list:
+        desc += "\n\n**🧹 Cleaners (not yet close to kick):**\n"
+        desc += "\n".join(f"• `{name}` — kick in `{days}` days" for name, days in cleaner_list)
 
     if overdue_cleaners:
         desc += "\n\n**⏳ Members overdue for Cleaner role:**\n"
@@ -268,22 +296,24 @@ async def check_inactive_members():
                 print(f"No permission to update roles for {member.name}")
             continue
             
-        # 🚫 Kick after 180 days of inactivity (still disabled)
+        # 🚫 Kick after 180 days of inactivity (verification step)
         if CLEANER_ROLE_NAME in role_names and last_active < kick_cutoff:
-            print(f"Preparing to kick {member.name} for inactivity")  # Debug log
-            # Commented out for now:
-            # try:
-            #     await member.kick(reason="Inactive for more than 180 days")
-            #     print(f"Kicked: {member.name}")
-            #     if warning_channel:
-            #         embed = create_embed(
-            #             title="Member kicked for inactivity 🧹",
-            #             description=f"{member.display_name} was kicked for 180+ days of inactivity.",
-            #             color=discord.Color.red()
-            #         )
-            #         await warning_channel.send(embed=embed)
-            # except discord.Forbidden:
-            #     print(f"No permission to kick {member.name}")
+            print(f"Preparing to flag {member.name} for kick verification")  # Debug log
+            staff_channel = bot.get_channel(STAFF_CHANNEL_ID)
+            if staff_channel:
+                embed = create_embed(
+                    title="⚠️ Kick candidate: Inactive >180 days",
+                    description=(
+                        f"{member.mention} has been inactive for over **{(now - last_active).days} days** "
+                        f"and still has the `Cleaner` role.\n"
+                        f"Joined: <t:{int(member.joined_at.timestamp())}:D>\n"
+                        f"Last active: <t:{int(last_active.timestamp())}:R>\n\n"
+                        f"Please verify before enabling the auto-kick."
+                    ),
+                    color=discord.Color.orange()
+                )
+                embed.set_footer(text="Auto-kick is currently disabled for safety.")
+                await staff_channel.send(embed=embed)
             continue
 
         # 🧹 Mark as inactive if over 90 days and not yet a Cleaner

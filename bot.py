@@ -3,6 +3,7 @@ import discord
 from discord.ext import tasks, commands
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
+from typing import Dict, Tuple
 
 load_dotenv()
 
@@ -20,19 +21,58 @@ intents = discord.Intents.default()
 intents.members = True
 intents.messages = True
 intents.guilds = True
-intents.voice_states = True
 intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+cache_ready = False
+
+# Activity cache: member_id -> last_active datetime
+activity_cache: Dict[int, datetime] = {}
 
 
 def create_embed(title: str, description: str, color=discord.Color.orange()):
     return discord.Embed(title=title, description=description, color=color)
 
 
+async def get_last_activity(member: discord.Member, guild: discord.Guild) -> datetime:
+    """Scans all channels to determine the most recent message timestamp from the member."""
+    now = datetime.now(timezone.utc)
+    latest_msg_time = member.joined_at or datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+    for channel in guild.text_channels:
+        if not channel.permissions_for(guild.me).read_messages:
+            continue
+        try:
+            async for msg in channel.history(limit=1000, oldest_first=False):
+                if msg.author.id == member.id:
+                    if msg.created_at > latest_msg_time:
+                        latest_msg_time = msg.created_at.replace(tzinfo=timezone.utc)
+        except (discord.Forbidden, discord.HTTPException):
+            continue
+
+    return latest_msg_time
+
+
+async def refresh_activity_cache(guild: discord.Guild):
+    """Rebuild the activity cache for all members."""
+    global cache_ready
+    cache_ready = False
+    activity_cache.clear()
+    for member in guild.members:
+        if member.bot:
+            continue
+        last_active = await get_last_activity(member, guild)
+        activity_cache[member.id] = last_active
+    cache_ready = True
+
+
 @bot.event
 async def on_ready():
     print(f"Bot connected as {bot.user}")
+    guild = bot.get_guild(GUILD_ID)
+    if guild:
+        print("Refreshing activity cache immediately...")
+        await refresh_activity_cache(guild)  # 👈 Initial cache fill
     check_inactive_members.start()
 
 
@@ -51,121 +91,52 @@ async def on_command_error(ctx, error):
 
 
 @bot.command()
-async def test_embed(ctx):
-    embed = create_embed(
-        title="Test Embed Message 🧹",
-        description=(
-            f"Attention {ctx.author.mention}, this is a formatting test for the Cleaner bot.\n"
-            f"`Cleaner` role would be assigned here if you were inactive.\n"
-            f"For Admin's reference: Original roles before cleanup: `Tester, Demo`"
-        )
-    )
-    await ctx.send(embed=embed)
-    
-    
-@bot.command()
 async def unreadable_channels(ctx):
-    """Lists all text channels the bot cannot read."""
     if not any(role.id == GENERAL_ROLE_ID for role in ctx.author.roles):
         await ctx.send("❌ You do not have permission to use this command.")
         return
 
     guild = bot.get_guild(GUILD_ID)
-    unreadable = []
-    for channel in guild.text_channels:
-        if not channel.permissions_for(guild.me).read_messages:
-            unreadable.append(channel.name)
+    unreadable = [
+        channel.name for channel in guild.text_channels
+        if not channel.permissions_for(guild.me).read_messages
+    ]
 
     if not unreadable:
         await ctx.send("✅ Bot can read all text channels.")
     else:
         await ctx.send(
-            f"⚠️ Cannot read these channels:\n" + "\n".join(f"• #{name}" for name in unreadable)
+            "⚠️ Cannot read these channels:\n" + "\n".join(f"• #{name}" for name in unreadable)
         )
-    
-    
+
+
 @bot.command()
-async def debug_cleaner_check(ctx):
+async def lastactive(ctx, member: discord.Member):
     if not any(role.id == GENERAL_ROLE_ID for role in ctx.author.roles):
         await ctx.send("❌ You do not have permission to use this command.")
         return
 
-    guild = bot.get_guild(GUILD_ID)
-    if not guild:
-        await ctx.send("Guild not found.")
+    if not cache_ready:
+        await ctx.send("⏳ Please wait, I'm still analyzing activity across the server. Try again in a few minutes.")
         return
 
-    now = datetime.now(timezone.utc)
-    kick_cutoff = now - timedelta(days=180)
-    overdue_cleaners = []
-
-    for member in guild.members:
-        if member.bot:
-            continue
-
-        member_roles = [r.name for r in member.roles]
-        if CLEANER_ROLE_NAME not in member_roles:
-            continue
-
-        last_active = None
-        used_voice_as_activity = False
-
-        # Try to find last message
-        for channel in guild.text_channels:
-            try:
-                async for msg in channel.history(limit=5000):
-                    if msg.author == member:
-                        if not last_active or msg.created_at > last_active:
-                            last_active = msg.created_at
-                        break
-            except discord.Forbidden:
-                continue
-
-        # Fallback to voice activity
-        if member.voice and member.voice.channel:
-            last_active = now
-            used_voice_as_activity = True
-
-        # Fallback to join date or 1970
-        if not last_active:
-            last_active = member.joined_at or datetime(1970, 1, 1, tzinfo=timezone.utc)
-
-        if last_active.tzinfo is None:
-            last_active = last_active.replace(tzinfo=timezone.utc)
-
-        days_inactive = (now - last_active).days
-
-        if last_active < kick_cutoff:
-            overdue_days = days_inactive - 180
-            overdue_cleaners.append({
-                "name": member.display_name,
-                "days_inactive": days_inactive,
-                "overdue_by": overdue_days,
-                "last_active": last_active.strftime('%Y-%m-%d %H:%M UTC'),
-                "used_voice": used_voice_as_activity
-            })
-
-    if not overdue_cleaners:
-        await ctx.send("✅ No overdue Cleaners found. All is working as expected.")
+    last_active = activity_cache.get(member.id)
+    if not last_active:
+        await ctx.send("⚠️ Activity data not yet available for this member. Try again later.")
         return
 
-    chunks = [overdue_cleaners[i:i + 10] for i in range(0, len(overdue_cleaners), 10)]
-    for chunk in chunks:
-        description = "**Overdue Cleaners (not yet kicked):**\n"
-        for user in chunk:
-            voice_note = "🎙️ Voice" if user["used_voice"] else "💬 Text/Join"
-            description += (
-                f"• `{user['name']}` — `{user['days_inactive']}d` inactive, "
-                f"`{user['overdue_by']}d` overdue\n"
-                f"   ↳ Last active: `{user['last_active']}` ({voice_note})\n"
-            )
+    last_active_str = last_active.strftime('%Y-%m-%d %H:%M:%S UTC')
+    days_ago = (datetime.now(timezone.utc) - last_active).days
+    join_date = member.joined_at.strftime('%Y-%m-%d %H:%M:%S UTC') if member.joined_at else "Unknown"
 
-        embed = create_embed(
-            title="🔍 Debug: Cleaner Kick Check",
-            description=description,
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
+    embed = discord.Embed(
+        title=f"🕵️ Last Activity for {member.display_name}",
+        color=discord.Color.orange()
+    )
+    embed.add_field(name="📅 Joined Server", value=join_date, inline=False)
+    embed.add_field(name="📊 Last Activity", value=f"{last_active_str} ({days_ago} days ago)", inline=False)
+
+    await ctx.send(embed=embed)
 
 
 @bot.command()
@@ -174,11 +145,11 @@ async def inactivity_report(ctx):
         await ctx.send("❌ You do not have permission to use this command.")
         return
 
-    guild = bot.get_guild(GUILD_ID)
-    if not guild:
-        await ctx.send("Guild not found.")
+    if not cache_ready:
+        await ctx.send("⏳ Please wait, I'm still scanning activity. Try again in a few minutes.")
         return
 
+    guild = bot.get_guild(GUILD_ID)
     now = datetime.now(timezone.utc)
     inactive_cutoff = now - timedelta(days=90)
     kick_cutoff = now - timedelta(days=180)
@@ -187,90 +158,68 @@ async def inactivity_report(ctx):
     overdue_cleaners = []
     cleaners_soon_kick = []
     cleaners_overdue_kick = []
+    active_members = []
+    
+    print(f"Total entries in activity_cache: {len(activity_cache)}")
 
     for member in guild.members:
-        if member.bot:
+        if member.bot or any(r.name in EXEMPT_ROLES for r in member.roles):
             continue
 
-        member_roles = [r.name for r in member.roles]
-        if any(role in EXEMPT_ROLES for role in member_roles if role in ["Major", "General"]):
-            continue
-
-        last_active = None
-
-        for channel in guild.text_channels:
-            try:
-                async for msg in channel.history(limit=5000):
-                    if msg.author == member:
-                        if not last_active or msg.created_at > last_active:
-                            last_active = msg.created_at
-                        break
-            except discord.Forbidden:
-                continue
-
-        if member.voice and member.voice.channel:
-            # Only treat as active if joined voice within last 24h
-            if member.voice.self_deaf is False:  # Optional: check if they're actually listening
-                voice_active_threshold = now - timedelta(hours=24)
-                if last_active is None or last_active < voice_active_threshold:
-                    last_active = voice_active_threshold
-
-        if not last_active:
-            last_active = member.joined_at or datetime(1970, 1, 1, tzinfo=timezone.utc)
-
-        if last_active.tzinfo is None:
-            last_active = last_active.replace(tzinfo=timezone.utc)
-            
-        days_since_join = (now - member.joined_at).days if member.joined_at else 0
+        days_since_join = (now - (member.joined_at or now)).days
         if days_since_join < 180:
-            continue  # Too new to consider for kick
+            continue
 
+        last_active = activity_cache.get(member.id)
+        if not last_active:
+            continue  # skip if not cached to avoid long delays
+        print(f"Member {member.display_name} — Cached last_active: {last_active}")
+        
         days_since = (now - last_active).days
+        role_names = [r.name for r in member.roles]
 
-        if CLEANER_ROLE_NAME in member_roles:
+        if CLEANER_ROLE_NAME in role_names:
             kick_in_days = 180 - days_since
             if kick_in_days <= 0:
                 cleaners_overdue_kick.append((member.display_name, abs(kick_in_days)))
             elif kick_in_days <= 14:
                 cleaners_soon_kick.append((member.display_name, kick_in_days))
+            # Cleaners who are not near kick time are not listed
         else:
             cleaner_in_days = 90 - days_since
-            if cleaner_in_days <= 14 and cleaner_in_days >= 0:
+            if 0 <= cleaner_in_days <= 14:
                 nearing_inactive.append((member.display_name, cleaner_in_days))
             elif cleaner_in_days < 0:
                 overdue_cleaners.append((member.display_name, abs(cleaner_in_days)))
-
-    if not nearing_inactive and not cleaners_soon_kick and not cleaners_overdue_kick:
-        await ctx.send("✅ All members are active or not near cleanup thresholds.")
-        return
+            else:
+                active_members.append((member.display_name, f"{days_since} days ago"))
 
     desc = ""
 
+    if active_members:
+        desc += "**✅ Active Members:**\n"
+        desc += "\n".join(f"• `{name}` — last active `{last}`" for name, last in active_members)
+
     if nearing_inactive:
-        desc += "**Members nearing inactivity (Cleaner role):**\n"
-        for name, days_left in sorted(nearing_inactive, key=lambda x: x[1]):
-            desc += f"• `{name}` — in `{days_left}` days\n"
-    
+        desc += "\n\n**⚠️ Members nearing inactivity (Cleaner role):**\n"
+        desc += "\n".join(f"• `{name}` — in `{days}` days" for name, days in nearing_inactive)
+
     if overdue_cleaners:
-        desc += "\n**Members overdue for Cleaner role:**\n"
-        for name, overdue_days in sorted(overdue_cleaners, key=lambda x: x[1], reverse=True):
-            desc += f"• `{name}` — overdue by `{overdue_days}` days\n"
+        desc += "\n\n**⏳ Members overdue for Cleaner role:**\n"
+        desc += "\n".join(f"• `{name}` — overdue by `{days}` days" for name, days in overdue_cleaners)
 
     if cleaners_soon_kick:
-        desc += "\n**Cleaners close to being kicked (≤14 days):**\n"
-        for name, days_left in sorted(cleaners_soon_kick, key=lambda x: x[1]):
-            desc += f"• `{name}` — kick in `{days_left}` days\n"
+        desc += "\n\n**❗ Cleaners close to being kicked (≤14 days):**\n"
+        desc += "\n".join(f"• `{name}` — kick in `{days}` days" for name, days in cleaners_soon_kick)
 
     if cleaners_overdue_kick:
-        desc += "\n**Cleaners overdue for kick:**\n"
-        for name, days_overdue in sorted(cleaners_overdue_kick, key=lambda x: x[1], reverse=True):
-            desc += f"• `{name}` — kick overdue by `{days_overdue}` days\n"
+        desc += "\n\n**🔥 Cleaners overdue for kick:**\n"
+        desc += "\n".join(f"• `{name}` — kick overdue by `{days}` days" for name, days in cleaners_overdue_kick)
 
-    embed = create_embed(
-        title="🕓 Inactivity Report",
-        description=desc,
-        color=discord.Color.blurple()
-    )
+    if not desc:
+        desc = "✅ All members are active or not near cleanup thresholds."
+
+    embed = create_embed("🕓 Inactivity Report", desc, discord.Color.blurple())
     await ctx.send(embed=embed)
 
 
@@ -283,74 +232,45 @@ async def check_inactive_members():
 
     now = datetime.now(timezone.utc)
     inactive_cutoff = now - timedelta(days=90)
-    kick_cutoff = now - timedelta(days=180)
     warning_channel = discord.utils.get(guild.text_channels, name=WARNING_CHANNEL_NAME)
 
+    print(f"Activity cache before refresh: {len(activity_cache)}")  # Debug log
+    await refresh_activity_cache(guild)
+    print(f"Activity cache after refresh: {len(activity_cache)}")  # Debug log
+
     for member in guild.members:
-        if member.bot:
+        if member.bot or any(r.name in EXEMPT_ROLES for r in member.roles):
             continue
 
-        member_roles = [r.name for r in member.roles]
-        if any(role in EXEMPT_ROLES for role in member_roles):
-            continue
-
-        # Skip recent joins (< 180 days)
-        days_since_join = (now - member.joined_at).days if member.joined_at else 0
+        days_since_join = (now - (member.joined_at or now)).days
         if days_since_join < 180:
             continue
 
-        # Determine last activity
-        last_active = None
-        for channel in guild.text_channels:
-            try:
-                async for msg in channel.history(limit=5000):
-                    if msg.author == member:
-                        if not last_active or msg.created_at > last_active:
-                            last_active = msg.created_at
-                        break
-            except discord.Forbidden:
-                continue
-
-        if member.voice and member.voice.channel:
-            # Only treat as active if joined voice within last 24h
-            if member.voice.self_deaf is False:  # Optional: check if they're actually listening
-                voice_active_threshold = now - timedelta(hours=24)
-                if last_active is None or last_active < voice_active_threshold:
-                    last_active = voice_active_threshold
-
-        if not last_active:
-            last_active = member.joined_at or datetime(1970, 1, 1, tzinfo=timezone.utc)
-
-        if last_active.tzinfo is None:
-            last_active = last_active.replace(tzinfo=timezone.utc)
-
-        days_since_active = (now - last_active).days
+        last_active = activity_cache.get(member.id)
+        days_since = (now - last_active).days
+        role_names = [r.name for r in member.roles]
 
         cleaner_role = discord.utils.get(guild.roles, name=CLEANER_ROLE_NAME)
         soldier_role = discord.utils.get(guild.roles, name=SOLDIER_ROLE_NAME)
 
         # ✅ Became active again
-        if CLEANER_ROLE_NAME in member_roles and last_active >= inactive_cutoff:
+        if CLEANER_ROLE_NAME in role_names and last_active >= inactive_cutoff:
             try:
-                if cleaner_role:
-                    await member.remove_roles(cleaner_role, reason="Active again")
+                await member.remove_roles(cleaner_role, reason="Active again")
                 if warning_channel:
-                    embed = create_embed(
-                        title="Member active again ✅",
-                        description=(
-                            f"{member.mention} became active again. `Cleaner` role removed.\n"
-                            f"<@&{GENERAL_ROLE_ID}> may want to restore previous roles."
-                        ),
-                        color=discord.Color.green()
-                    )
-                    await warning_channel.send(embed=embed)
-                print(f"{member.name} became active again.")
+                    await warning_channel.send(embed=create_embed(
+                        "Member active again ✅",
+                        f"{member.mention} became active again. `Cleaner` role removed.\n"
+                        f"<@&{GENERAL_ROLE_ID}> may want to restore previous roles.",
+                        discord.Color.green()
+                    ))
             except discord.Forbidden:
                 print(f"No permission to update roles for {member.name}")
             continue
-
-        # 🚫 Kick after 180 days of inactivity
-        if CLEANER_ROLE_NAME in member_roles and last_active < kick_cutoff:
+            
+        # 🚫 Kick after 180 days of inactivity (still disabled)
+        if CLEANER_ROLE_NAME in role_names and last_active < kick_cutoff:
+            print(f"Preparing to kick {member.name} for inactivity")  # Debug log
             # Commented out for now:
             # try:
             #     await member.kick(reason="Inactive for more than 180 days")
@@ -367,7 +287,7 @@ async def check_inactive_members():
             continue
 
         # 🧹 Mark as inactive if over 90 days and not yet a Cleaner
-        if CLEANER_ROLE_NAME not in member_roles and last_active < inactive_cutoff:
+        if CLEANER_ROLE_NAME not in role_names and last_active < inactive_cutoff:
             roles_to_remove = [
                 r for r in member.roles
                 if r.name not in EXEMPT_ROLES and r != guild.default_role
@@ -378,24 +298,19 @@ async def check_inactive_members():
 
                 if cleaner_role:
                     await member.add_roles(cleaner_role, reason="Inactive 90+ days")
-
-                    original_roles_str = ", ".join([r.name for r in roles_to_remove]) or "None"
-                    embed = create_embed(
-                        title="Inactivity detected 🙁",
-                        description=(
+                    if warning_channel:
+                        await warning_channel.send(embed=create_embed(
+                            "Inactivity detected 🙁",
                             f"Attention {member.mention}, you have been marked as inactive and therefore "
                             f"degraded to the `Cleaner` role. 🙁🧹 Sorry, there is no kitchen service on this server. 😂\n"
                             f"Please become active to avoid removal. 🙏🏻\n\n"
-                            f"For Admin's reference: Original roles before cleanup: `{original_roles_str}`."
-                        )
-                    )
-                    if warning_channel:
-                        await warning_channel.send(embed=embed)
+                            f"For Admin's reference: Original roles before cleanup: "
+                            f"`{', '.join([r.name for r in roles_to_remove]) or 'None'}`."
+                        ))
 
                 if soldier_role and soldier_role not in member.roles:
                     await member.add_roles(soldier_role, reason="Maintain Soldier role")
 
-                print(f"Updated: {member.name}")
             except discord.Forbidden:
                 print(f"No permission to update roles for {member.name}")
 

@@ -9,13 +9,13 @@ load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("DISCORD_GUILD_ID"))
-GENERAL_ROLE_ID = 1269752542515040477
-STAFF_CHANNEL_ID = 1194194222702661632
 
-CLEANER_ROLE_NAME = "Cleaner"
-SOLDIER_ROLE_NAME = "Soldier"
-EXEMPT_ROLES = ["Major", "General"]
-WARNING_CHANNEL_NAME = "discussion-💬"
+CLEANER_ROLE_ID = 1225867465259618396
+SOLDIER_ROLE_ID = 1109506946689671199
+EXEMPT_ROLE_IDS = [1109510121454837822, 1269752542515040477]
+WARNING_CHANNEL_ID = 1109096955252068384
+GENERAL_ROLE_ID = 1269752542515040477  
+STAFF_CHANNEL_ID = 1194194222702661632 
 
 intents = discord.Intents.default()
 intents.members = True
@@ -159,7 +159,7 @@ async def lastactive(ctx, member: discord.Member):
     await ctx.send(embed=embed)
 
 
-@bot.command(help="Displays an inactivity report. Add '--m' to only show members near Cleaner or kick thresholds.")
+@bot.command(help="Displays an inactivity report. Add 'clean' to only show members near Cleaner or kick thresholds.")
 async def inactivity_report(ctx, *args):
     if not any(role.id == GENERAL_ROLE_ID for role in ctx.author.roles):
         await ctx.send("❌ You do not have permission to use this command.")
@@ -169,7 +169,7 @@ async def inactivity_report(ctx, *args):
         await ctx.send("⏳ Please wait, I'm still scanning activity. Try again in a few minutes.")
         return
 
-    minimal = "--m" in args
+    minimal = "clean" in args
 
     guild = bot.get_guild(GUILD_ID)
     now = datetime.now(timezone.utc)
@@ -186,7 +186,7 @@ async def inactivity_report(ctx, *args):
     print(f"Total entries in activity_cache: {len(activity_cache)}")
 
     for member in guild.members:
-        if member.bot or any(r.name in EXEMPT_ROLES for r in member.roles):
+        if member.bot or any(r.id in EXEMPT_ROLE_IDS for r in member.roles):
             continue
 
         days_since_join = (now - (member.joined_at or now)).days
@@ -201,7 +201,7 @@ async def inactivity_report(ctx, *args):
         days_since = (now - last_active).days
         role_names = [r.name for r in member.roles]
 
-        if CLEANER_ROLE_NAME in role_names:
+        if any(role.id == CLEANER_ROLE_ID for role in member.roles):
             kick_in_days = 180 - days_since
             if kick_in_days <= 0:
                 cleaners_overdue_kick.append((member.display_name, abs(kick_in_days)))
@@ -260,14 +260,14 @@ async def check_inactive_members():
 
     now = datetime.now(timezone.utc)
     inactive_cutoff = now - timedelta(days=90)
-    warning_channel = discord.utils.get(guild.text_channels, name=WARNING_CHANNEL_NAME)
+    warning_channel = guild.get_channel(WARNING_CHANNEL_ID)
 
     print(f"Activity cache before refresh: {len(activity_cache)}")  # Debug log
     await refresh_activity_cache(guild)
     print(f"Activity cache after refresh: {len(activity_cache)}")  # Debug log
 
     for member in guild.members:
-        if member.bot or any(r.name in EXEMPT_ROLES for r in member.roles):
+        if member.bot or any(r.id in EXEMPT_ROLE_IDS for r in member.roles):
             continue
 
         days_since_join = (now - (member.joined_at or now)).days
@@ -278,8 +278,8 @@ async def check_inactive_members():
         days_since = (now - last_active).days
         role_names = [r.name for r in member.roles]
 
-        cleaner_role = discord.utils.get(guild.roles, name=CLEANER_ROLE_NAME)
-        soldier_role = discord.utils.get(guild.roles, name=SOLDIER_ROLE_NAME)
+        cleaner_role = guild.get_role(CLEANER_ROLE_ID)
+        soldier_role = guild.get_role(SOLDIER_ROLE_ID)
 
         # ✅ Became active again
         if CLEANER_ROLE_NAME in role_names and last_active >= inactive_cutoff:

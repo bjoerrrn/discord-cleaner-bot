@@ -95,13 +95,11 @@ async def on_message(message):
     if message.author.bot:
         return  # Ignore bots
 
-    if not cache_ready:
-        return  # Skip updates until cache is initialized
+    if cache_ready:
+        # Only update cache if ready
+        activity_cache[message.author.id] = datetime.now(timezone.utc)
 
-    # Update the activity cache with the current timestamp
-    activity_cache[message.author.id] = datetime.now(timezone.utc)
-
-    await bot.process_commands(message)  # Ensure commands still work
+    await bot.process_commands(message)  # Always allow commands to run
         
         
 @bot.command(name="commands", help="Displays a list of all available bot commands (General role only).")
@@ -186,6 +184,10 @@ async def inactivity_report(ctx, *args):
     minimal = "clean" in args
 
     guild = bot.get_guild(GUILD_ID)
+    if guild is None:
+        await ctx.send("⚠️ Guild not found. Please try again later.")
+        return
+    
     now = datetime.now(timezone.utc)
     inactive_cutoff = now - timedelta(days=90)
     kick_cutoff = now - timedelta(days=180)

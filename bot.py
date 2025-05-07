@@ -43,7 +43,7 @@ async def get_last_activity(member: discord.Member, guild: discord.Guild) -> dat
         if not channel.permissions_for(guild.me).read_messages:
             continue
         try:
-            async for msg in channel.history(limit=1000, oldest_first=False):
+            async for msg in channel.history(limit=5000, oldest_first=False):
                 if msg.author.id == member.id:
                     if msg.created_at > latest_msg_time:
                         latest_msg_time = msg.created_at.replace(tzinfo=timezone.utc)
@@ -88,6 +88,20 @@ async def on_command_error(ctx, error):
         await staff_channel.send(embed=embed)
     else:
         print("Staff channel not found for error reporting.")
+        
+        
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return  # Ignore bots
+
+    if not cache_ready:
+        return  # Skip updates until cache is initialized
+
+    # Update the activity cache with the current timestamp
+    activity_cache[message.author.id] = datetime.now(timezone.utc)
+
+    await bot.process_commands(message)  # Ensure commands still work
         
         
 @bot.command(name="commands", help="Displays a list of all available bot commands (General role only).")
@@ -182,41 +196,47 @@ async def inactivity_report(ctx, *args):
     cleaners_overdue_kick = []
     active_members = []
     cleaner_list = []
+    uncached_members = []
 
     print(f"Total entries in activity_cache: {len(activity_cache)}")
 
     for member in guild.members:
-        if member.bot or any(r.id in EXEMPT_ROLE_IDS for r in member.roles):
-            continue
-
-        days_since_join = (now - (member.joined_at or now)).days
-        if days_since_join < 180:
+        if member.bot:
             continue
 
         last_active = activity_cache.get(member.id)
+        days_since_join = (now - (member.joined_at or now)).days
+        is_cleaner = any(role.id == CLEANER_ROLE_ID for role in member.roles)
+        is_exempt = any(role.id in EXEMPT_ROLE_IDS for role in member.roles)
+
         if not last_active:
-            continue  # skip if not cached to avoid long delays
-        print(f"Member {member.display_name} — Cached last_active: {last_active}")
+            if not minimal:
+                uncached_members.append(member.display_name)
+            continue
 
         days_since = (now - last_active).days
-        role_names = [r.name for r in member.roles]
 
-        if any(role.id == CLEANER_ROLE_ID for role in member.roles):
-            kick_in_days = 180 - days_since
-            if kick_in_days <= 0:
-                cleaners_overdue_kick.append((member.display_name, abs(kick_in_days)))
-            elif kick_in_days <= 14:
-                cleaners_soon_kick.append((member.display_name, kick_in_days))
-            elif not minimal:
-                cleaner_list.append((member.display_name, kick_in_days))
-        else:
-            cleaner_in_days = 90 - days_since
-            if 0 <= cleaner_in_days <= 14:
-                nearing_inactive.append((member.display_name, cleaner_in_days))
-            elif cleaner_in_days < 0:
-                overdue_cleaners.append((member.display_name, abs(cleaner_in_days)))
-            elif not minimal:
-                active_members.append((member.display_name, f"{days_since} days ago"))
+        # Cleanup logic only for non-exempt, old-enough members
+        if not is_exempt and days_since_join >= 180:
+            if is_cleaner:
+                kick_in_days = 180 - days_since
+                if kick_in_days <= 0:
+                    cleaners_overdue_kick.append((member.display_name, abs(kick_in_days)))
+                elif kick_in_days <= 14:
+                    cleaners_soon_kick.append((member.display_name, kick_in_days))
+                elif not minimal:
+                    cleaner_list.append((member.display_name, kick_in_days))
+            else:
+                cleaner_in_days = 90 - days_since
+                if 0 <= cleaner_in_days <= 14:
+                    nearing_inactive.append((member.display_name, cleaner_in_days))
+                elif cleaner_in_days < 0:
+                    overdue_cleaners.append((member.display_name, abs(cleaner_in_days)))
+                elif not minimal:
+                    active_members.append((member.display_name, f"{days_since} days ago"))
+        elif not minimal:
+            # Exempt or new members still shown as active
+            active_members.append((member.display_name, f"{days_since} days ago"))
 
     desc = ""
 
@@ -244,12 +264,15 @@ async def inactivity_report(ctx, *args):
         desc += "\n\n**🔥 Cleaners overdue for kick:**\n"
         desc += "\n".join(f"• `{name}` — kick overdue by `{days}` days" for name, days in cleaners_overdue_kick)
 
+    if uncached_members:
+        desc += "\n\n**⚠️ Members not yet analyzed (no messages seen):**\n"
+        desc += "\n".join(f"• `{name}`" for name in uncached_members)
+
     if not desc:
         desc = "✅ All members are active or not near cleanup thresholds."
 
     embed = create_embed("🕓 Inactivity Report", desc, discord.Color.blurple())
     await ctx.send(embed=embed)
-
 
 @tasks.loop(hours=24)
 async def check_inactive_members():

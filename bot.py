@@ -108,6 +108,10 @@ async def list_commands(ctx):
         await ctx.send("❌ You do not have permission to use this command.")
         return
 
+    if not cache_ready:
+        await ctx.send("⏳ Please wait, I'm still analyzing activity across the server. Try again in a few minutes.")
+        return
+
     embed = discord.Embed(
         title="Available Bot Commands",
         color=discord.Color.blue()
@@ -126,6 +130,10 @@ async def list_commands(ctx):
 async def unreadable_channels(ctx):
     if not any(role.id == GENERAL_ROLE_ID for role in ctx.author.roles):
         await ctx.send("❌ You do not have permission to use this command.")
+        return
+
+    if not cache_ready:
+        await ctx.send("⏳ Please wait, I'm still analyzing activity across the server. Try again in a few minutes.")
         return
 
     guild = bot.get_guild(GUILD_ID)
@@ -169,6 +177,52 @@ async def lastactive(ctx, member: discord.Member):
     embed.add_field(name="📊 Last Activity", value=f"{last_active_str} ({days_ago} days ago)", inline=False)
 
     await ctx.send(embed=embed)
+    
+    
+@bot.command(help="Exports the activity cache as a CSV file, including inactive members and their roles.")
+async def exportactivity(ctx):
+    if not any(role.id == GENERAL_ROLE_ID for role in ctx.author.roles):
+        await ctx.send("❌ You do not have permission to use this command.")
+        return
+
+    if not cache_ready:
+        await ctx.send("⏳ Please wait, I'm still analyzing activity across the server. Try again in a few minutes.")
+        return
+
+    now = datetime.now(timezone.utc)
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["User ID", "Display Name", "Last Active (UTC)", "Days Ago", "Joined At (UTC)", "Roles"])
+
+    for member in ctx.guild.members:
+        if member.bot:
+            continue  # Skip bots
+
+        user_id = member.id
+        last_seen = activity_cache.get(user_id)
+        joined_at = member.joined_at.strftime('%Y-%m-%d %H:%M:%S') if member.joined_at else "Unknown"
+        roles = "; ".join(role.name for role in member.roles if role.name != "@everyone")
+
+        if last_seen:
+            days_ago = (now - last_seen).days
+            last_seen_str = last_seen.strftime('%Y-%m-%d %H:%M:%S')
+            days_ago_str = str(days_ago)
+        else:
+            last_seen_str = "Never"
+            days_ago_str = "Not in cache"
+
+        writer.writerow([
+            str(user_id),
+            member.display_name,
+            last_seen_str,
+            days_ago_str,
+            joined_at,
+            roles
+        ])
+
+    output.seek(0)
+    csv_file = discord.File(fp=output, filename="activity_cache_full.csv")
+    await ctx.send("📁 Full activity cache including inactive members:", file=csv_file)
 
 
 @bot.command(help="Displays an inactivity report. Add 'clean' to only show members near Cleaner or kick thresholds.")
@@ -275,6 +329,7 @@ async def inactivity_report(ctx, *args):
 
     embed = create_embed("🕓 Inactivity Report", desc, discord.Color.blurple())
     await ctx.send(embed=embed)
+
 
 @tasks.loop(hours=24)
 async def check_inactive_members():

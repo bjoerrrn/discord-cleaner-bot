@@ -27,6 +27,7 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 cache_ready = False
+cache_progress = 0  # 0 to 100
 
 # Activity cache: member_id -> last_active datetime
 activity_cache: Dict[int, datetime] = {}
@@ -56,15 +57,22 @@ async def get_last_activity(member: discord.Member, guild: discord.Guild) -> dat
 
 
 async def refresh_activity_cache(guild: discord.Guild):
-    """Rebuild the activity cache for all members."""
-    global cache_ready
+    global cache_ready, cache_progress
     cache_ready = False
+    cache_progress = 0
     activity_cache.clear()
-    for member in guild.members:
-        if member.bot:
-            continue
+
+    non_bot_members = [m for m in guild.members if not m.bot]
+    total = len(non_bot_members)
+
+    for index, member in enumerate(non_bot_members, start=1):
         last_active = await get_last_activity(member, guild)
         activity_cache[member.id] = last_active
+
+        # Update percentage progress
+        cache_progress = int((index / total) * 100)
+
+    cache_progress = 100
     cache_ready = True
 
 
@@ -111,7 +119,7 @@ async def list_commands(ctx):
         return
 
     if not cache_ready:
-        await ctx.send("⏳ Please wait, I'm still analyzing activity across the server. Try again in a few minutes.")
+        await ctx.send(f"⏳ Please wait, I'm still scanning activity. Status: {cache_progress}%. Try again in a few minutes.")
         return
 
     embed = discord.Embed(
@@ -135,7 +143,7 @@ async def unreadable_channels(ctx):
         return
 
     if not cache_ready:
-        await ctx.send("⏳ Please wait, I'm still analyzing activity across the server. Try again in a few minutes.")
+        await ctx.send(f"⏳ Please wait, I'm still scanning activity. Status: {cache_progress}%. Try again in a few minutes.")
         return
 
     guild = bot.get_guild(GUILD_ID)
@@ -159,7 +167,7 @@ async def lastactive(ctx, member: discord.Member):
         return
 
     if not cache_ready:
-        await ctx.send("⏳ Please wait, I'm still analyzing activity across the server. Try again in a few minutes.")
+        await ctx.send(f"⏳ Please wait, I'm still scanning activity. Status: {cache_progress}%. Try again in a few minutes.")
         return
 
     last_active = activity_cache.get(member.id)
@@ -188,7 +196,7 @@ async def exportactivity(ctx):
         return
 
     if not cache_ready:
-        await ctx.send("⏳ Please wait, I'm still analyzing activity across the server. Try again in a few minutes.")
+        await ctx.send(f"⏳ Please wait, I'm still scanning activity. Status: {cache_progress}%. Try again in a few minutes.")
         return
 
     now = datetime.now(timezone.utc)
@@ -234,7 +242,7 @@ async def inactivity_report(ctx, *args):
         return
 
     if not cache_ready:
-        await ctx.send("⏳ Please wait, I'm still scanning activity. Try again in a few minutes.")
+        await ctx.send(f"⏳ Please wait, I'm still scanning activity. Status: {cache_progress}%. Try again in a few minutes.")
         return
 
     minimal = "clean" in args

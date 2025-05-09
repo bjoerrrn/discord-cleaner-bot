@@ -1,9 +1,11 @@
 import os
 import discord
+import csv
 from discord.ext import tasks, commands
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from typing import Dict, Tuple
+from io import StringIO
 
 load_dotenv()
 
@@ -272,7 +274,7 @@ async def inactivity_report(ctx, *args):
 
         days_since = (now - last_active).days
 
-        # Cleanup logic only for non-exempt, old-enough members
+        # Only apply cleanup rules to non-exempt members who joined ≥180 days ago
         if not is_exempt and days_since_join >= 180:
             if is_cleaner:
                 kick_in_days = 180 - days_since
@@ -280,19 +282,30 @@ async def inactivity_report(ctx, *args):
                     cleaners_overdue_kick.append((member.display_name, abs(kick_in_days)))
                 elif kick_in_days <= 14:
                     cleaners_soon_kick.append((member.display_name, kick_in_days))
-                elif not minimal:
-                    cleaner_list.append((member.display_name, kick_in_days))
+                else:
+                    if not minimal:
+                        cleaner_list.append((member.display_name, kick_in_days))
             else:
                 cleaner_in_days = 90 - days_since
-                if 0 <= cleaner_in_days <= 14:
-                    nearing_inactive.append((member.display_name, cleaner_in_days))
-                elif cleaner_in_days < 0:
+                if cleaner_in_days < 0:
                     overdue_cleaners.append((member.display_name, abs(cleaner_in_days)))
-                elif not minimal:
-                    active_members.append((member.display_name, f"{days_since} days ago"))
+                elif cleaner_in_days <= 14:
+                    nearing_inactive.append((member.display_name, cleaner_in_days))
+                else:
+                    if not minimal:
+                        active_members.append((member.display_name, f"{days_since} days ago"))
         elif not minimal:
-            # Exempt or new members still shown as active
-            active_members.append((member.display_name, f"{days_since} days ago"))
+            # Too new or exempt — still show if not a Cleaner
+            if not is_cleaner:
+                active_members.append((member.display_name, f"{days_since} days ago"))
+
+    # Sort each list numerically ascending by days
+    nearing_inactive.sort(key=lambda x: x[1])
+    overdue_cleaners.sort(key=lambda x: x[1])
+    cleaners_soon_kick.sort(key=lambda x: x[1])
+    cleaners_overdue_kick.sort(key=lambda x: x[1])
+    cleaner_list.sort(key=lambda x: x[1])
+    active_members.sort(key=lambda x: int(x[1].split()[0]) if x[1] != "Unknown" else 999)
 
     desc = ""
 
@@ -320,7 +333,7 @@ async def inactivity_report(ctx, *args):
         desc += "\n\n**🔥 Cleaners overdue for kick:**\n"
         desc += "\n".join(f"• `{name}` — kick overdue by `{days}` days" for name, days in cleaners_overdue_kick)
 
-    if uncached_members:
+    if uncached_members and not minimal:
         desc += "\n\n**⚠️ Members not yet analyzed (no messages seen):**\n"
         desc += "\n".join(f"• `{name}`" for name in uncached_members)
 

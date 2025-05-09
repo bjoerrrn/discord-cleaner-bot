@@ -238,109 +238,112 @@ async def inactivity_report(ctx, *args):
         return
 
     minimal = "clean" in args
-
     guild = bot.get_guild(GUILD_ID)
     if guild is None:
         await ctx.send("⚠️ Guild not found. Please try again later.")
         return
-    
+
     now = datetime.now(timezone.utc)
-    inactive_cutoff = now - timedelta(days=90)
-    kick_cutoff = now - timedelta(days=180)
 
     nearing_inactive = []
     overdue_cleaners = []
     cleaners_soon_kick = []
     cleaners_overdue_kick = []
-    active_members = []
     cleaner_list = []
+    active_members = []
     uncached_members = []
-
-    print(f"Total entries in activity_cache: {len(activity_cache)}")
 
     for member in guild.members:
         if member.bot:
             continue
 
         last_active = activity_cache.get(member.id)
-        days_since_join = (now - (member.joined_at or now)).days
+        joined_at = member.joined_at or now
+        days_since_join = (now - joined_at).days
         is_cleaner = any(role.id == CLEANER_ROLE_ID for role in member.roles)
         is_exempt = any(role.id in EXEMPT_ROLE_IDS for role in member.roles)
 
+        if is_exempt:
+            continue
+
+        # Handle members who never became active
         if not last_active:
-            if not minimal:
+            if days_since_join >= 90 and not is_cleaner:
+                overdue_cleaners.append((member.display_name, f"never active, joined {days_since_join}d ago"))
+            elif not minimal:
                 uncached_members.append(member.display_name)
             continue
 
         days_since = (now - last_active).days
 
-        # Only apply cleanup rules to non-exempt members who joined ≥180 days ago
-        if not is_exempt and days_since_join >= 180:
-            if is_cleaner:
-                kick_in_days = 180 - days_since
-                if kick_in_days <= 0:
-                    cleaners_overdue_kick.append((member.display_name, abs(kick_in_days)))
-                elif kick_in_days <= 14:
-                    cleaners_soon_kick.append((member.display_name, kick_in_days))
-                else:
-                    if not minimal:
-                        cleaner_list.append((member.display_name, kick_in_days))
+        if is_cleaner:
+            kick_in_days = 180 - days_since
+            if kick_in_days <= 0:
+                cleaners_overdue_kick.append((member.display_name, abs(kick_in_days)))
+            elif kick_in_days <= 14:
+                cleaners_soon_kick.append((member.display_name, kick_in_days))
             else:
-                cleaner_in_days = 90 - days_since
-                if cleaner_in_days < 0:
-                    overdue_cleaners.append((member.display_name, abs(cleaner_in_days)))
-                elif cleaner_in_days <= 14:
-                    nearing_inactive.append((member.display_name, cleaner_in_days))
-                else:
-                    if not minimal:
-                        active_members.append((member.display_name, f"{days_since} days ago"))
-        elif not minimal:
-            # Too new or exempt — still show if not a Cleaner
-            if not is_cleaner:
-                active_members.append((member.display_name, f"{days_since} days ago"))
+                cleaner_list.append((member.display_name, kick_in_days))
+        else:
+            cleaner_in_days = 90 - days_since
+            if cleaner_in_days < 0:
+                overdue_cleaners.append((member.display_name, abs(cleaner_in_days)))
+            elif cleaner_in_days <= 14:
+                nearing_inactive.append((member.display_name, cleaner_in_days))
+            else:
+                if not minimal:
+                    active_members.append((member.display_name, f"{days_since} days ago"))
 
-    # Sort each list numerically ascending by days
+    # Sort all lists
     nearing_inactive.sort(key=lambda x: x[1])
-    overdue_cleaners.sort(key=lambda x: x[1])
+    overdue_cleaners.sort(key=lambda x: int(str(x[1]).split()[0]) if isinstance(x[1], str) else x[1])
     cleaners_soon_kick.sort(key=lambda x: x[1])
     cleaners_overdue_kick.sort(key=lambda x: x[1])
     cleaner_list.sort(key=lambda x: x[1])
     active_members.sort(key=lambda x: int(x[1].split()[0]) if x[1] != "Unknown" else 999)
 
+    # Compose embed description
     desc = ""
 
-    if active_members:
-        desc += "**✅ Active Members:**\n"
-        desc += "\n".join(f"• `{name}` — last active `{last}`" for name, last in active_members)
+    def add_section(title, members):
+        nonlocal desc
+        if members:
+            desc += f"\n\n**{title} ({len(members)}):**\n"
+            desc += "\n".join(f"• `{name}` — {info}" for name, info in members)
 
-    if nearing_inactive:
-        desc += "\n\n**⚠️ Members nearing inactivity (Cleaner role):**\n"
-        desc += "\n".join(f"• `{name}` — in `{days}` days" for name, days in nearing_inactive)
-
-    if cleaner_list:
-        desc += "\n\n**🧹 Cleaners (not yet close to kick):**\n"
-        desc += "\n".join(f"• `{name}` — kick in `{days}` days" for name, days in cleaner_list)
-
-    if overdue_cleaners:
-        desc += "\n\n**⏳ Members overdue for Cleaner role:**\n"
-        desc += "\n".join(f"• `{name}` — overdue by `{days}` days" for name, days in overdue_cleaners)
-
-    if cleaners_soon_kick:
-        desc += "\n\n**❗ Cleaners close to being kicked (≤14 days):**\n"
-        desc += "\n".join(f"• `{name}` — kick in `{days}` days" for name, days in cleaners_soon_kick)
-
-    if cleaners_overdue_kick:
-        desc += "\n\n**🔥 Cleaners overdue for kick:**\n"
-        desc += "\n".join(f"• `{name}` — kick overdue by `{days}` days" for name, days in cleaners_overdue_kick)
+    add_section("✅ Active Members", active_members)
+    add_section("⚠️ Members nearing inactivity (Cleaner role)", nearing_inactive)
+    add_section("🧹 Cleaners (not yet close to kick)", cleaner_list)
+    add_section("⏳ Members overdue for Cleaner role", overdue_cleaners)
+    add_section("❗ Cleaners close to being kicked (≤14 days)", cleaners_soon_kick)
+    add_section("🔥 Cleaners overdue for kick", cleaners_overdue_kick)
 
     if uncached_members and not minimal:
-        desc += "\n\n**⚠️ Members not yet analyzed (no messages seen):**\n"
+        desc += f"\n\n**⚠️ Members not yet analyzed (no messages seen) ({len(uncached_members)}):**\n"
         desc += "\n".join(f"• `{name}`" for name in uncached_members)
 
-    if not desc:
+    # Totals
+    total_count = len([
+        member for member in guild.members
+        if not member.bot and not any(role.id in EXEMPT_ROLE_IDS for role in member.roles)
+    ])
+
+    listed_count = (
+        len(active_members)
+        + len(nearing_inactive)
+        + len(cleaner_list)
+        + len(overdue_cleaners)
+        + len(cleaners_soon_kick)
+        + len(cleaners_overdue_kick)
+        + (len(uncached_members) if not minimal else 0)
+    )
+
+    desc += f"\n\n**👥 Members displayed: `{listed_count}` / Analyzed (excluding bots & exempt): `{total_count}`**"
+
+    if not desc.strip():
         desc = "✅ All members are active or not near cleanup thresholds."
 
-    embed = create_embed("🕓 Inactivity Report", desc, discord.Color.blurple())
+    embed = create_embed("🕓 Inactivity Report", desc.strip(), discord.Color.blurple())
     await ctx.send(embed=embed)
 
 
@@ -353,6 +356,7 @@ async def check_inactive_members():
 
     now = datetime.now(timezone.utc)
     inactive_cutoff = now - timedelta(days=90)
+    kick_cutoff = now - timedelta(days=180)
     warning_channel = guild.get_channel(WARNING_CHANNEL_ID)
 
     print(f"Activity cache before refresh: {len(activity_cache)}")  # Debug log
@@ -368,11 +372,42 @@ async def check_inactive_members():
             continue
 
         last_active = activity_cache.get(member.id)
-        days_since = (now - last_active).days
         role_names = [r.name for r in member.roles]
 
         cleaner_role = guild.get_role(CLEANER_ROLE_ID)
         soldier_role = guild.get_role(SOLDIER_ROLE_ID)
+
+        # 🧹 Handle members who never became active
+        if last_active is None:
+            if CLEANER_ROLE_NAME not in role_names and days_since_join >= 90:
+                roles_to_remove = [
+                    r for r in member.roles
+                    if r.name not in EXEMPT_ROLES and r != guild.default_role
+                ]
+                try:
+                    if roles_to_remove:
+                        await member.remove_roles(*roles_to_remove, reason="Marked inactive (never active)")
+
+                    if cleaner_role:
+                        await member.add_roles(cleaner_role, reason="Inactive (never active)")
+                        if warning_channel:
+                            await warning_channel.send(embed=create_embed(
+                                "Inactivity detected 🙁",
+                                f"Attention {member.mention}, you have been marked as inactive and therefore "
+                                f"degraded to the `Cleaner` role. 🙁🧹 Sorry, there is no kitchen service on this server. 😂\n"
+                                f"Please become active to avoid removal. 🙏🏻\n\n"
+                                f"For Admin's reference: Original roles before cleanup: "
+                                f"`{', '.join([r.name for r in roles_to_remove]) or 'None'}`."
+                            ))
+
+                    if soldier_role and soldier_role not in member.roles:
+                        await member.add_roles(soldier_role, reason="Maintain Soldier role")
+
+                except discord.Forbidden:
+                    print(f"No permission to update roles for {member.name}")
+            continue
+
+        days_since = (now - last_active).days
 
         # ✅ Became active again
         if CLEANER_ROLE_NAME in role_names and last_active >= inactive_cutoff:
@@ -388,7 +423,7 @@ async def check_inactive_members():
             except discord.Forbidden:
                 print(f"No permission to update roles for {member.name}")
             continue
-            
+
         # 🚫 Kick after 180 days of inactivity (verification step)
         if CLEANER_ROLE_NAME in role_names and last_active < kick_cutoff:
             print(f"Preparing to flag {member.name} for kick verification")  # Debug log
@@ -436,5 +471,5 @@ async def check_inactive_members():
 
             except discord.Forbidden:
                 print(f"No permission to update roles for {member.name}")
-
+                
 bot.run(TOKEN)

@@ -380,14 +380,13 @@ async def check_inactive_members():
             continue
 
         last_active = activity_cache.get(member.id)
-        role_names = [r.name for r in member.roles]
 
         cleaner_role = guild.get_role(CLEANER_ROLE_ID)
         soldier_role = guild.get_role(SOLDIER_ROLE_ID)
 
         # 🧹 Handle members who never became active
         if last_active is None:
-            if CLEANER_ROLE_NAME not in role_names and days_since_join >= 90:
+            if cleaner_role not in member.roles and days_since_join >= 90:
                 roles_to_remove = [
                     r for r in member.roles
                     if r.name not in EXEMPT_ROLES and r != guild.default_role
@@ -418,7 +417,7 @@ async def check_inactive_members():
         days_since = (now - last_active).days
 
         # ✅ Became active again
-        if CLEANER_ROLE_NAME in role_names and last_active >= inactive_cutoff:
+        if cleaner_role in member.roles and last_active >= inactive_cutoff:
             try:
                 await member.remove_roles(cleaner_role, reason="Active again")
                 if warning_channel:
@@ -433,7 +432,7 @@ async def check_inactive_members():
             continue
 
         # 🚫 Kick after 180 days of inactivity (verification step)
-        if CLEANER_ROLE_NAME in role_names and last_active < kick_cutoff:
+        if cleaner_role in member.roles and last_active < kick_cutoff:
             print(f"Preparing to flag {member.name} for kick verification")  # Debug log
             staff_channel = bot.get_channel(STAFF_CHANNEL_ID)
             if staff_channel:
@@ -453,7 +452,7 @@ async def check_inactive_members():
             continue
 
         # 🧹 Mark as inactive if over 90 days and not yet a Cleaner
-        if CLEANER_ROLE_NAME not in role_names and last_active < inactive_cutoff:
+        if cleaner_role not in member.roles and last_active < inactive_cutoff:
             roles_to_remove = [
                 r for r in member.roles
                 if r.name not in EXEMPT_ROLES and r != guild.default_role
@@ -479,5 +478,5 @@ async def check_inactive_members():
 
             except discord.Forbidden:
                 print(f"No permission to update roles for {member.name}")
-                
+                  
 bot.run(TOKEN)

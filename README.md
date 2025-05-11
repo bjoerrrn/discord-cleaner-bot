@@ -1,4 +1,4 @@
-# 📦 Discord Cleaner Bot
+# Discord Cleaner Bot
 
 A Discord bot that automatically assigns the "Cleaner" role to members who have been inactive (no messages or voice activity) for over 90 days. It also removes all other roles except "Soldier", and kicks them after 180 days.
 

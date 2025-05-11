@@ -287,17 +287,17 @@ async def inactivity_report(ctx, *args):
         if is_cleaner:
             kick_in_days = 180 - days_since
             if kick_in_days <= 0:
-                cleaners_overdue_kick.append((member.display_name, abs(kick_in_days)))
+                cleaners_overdue_kick.append((member.display_name, f"since {abs(kick_in_days)} days"))
             elif kick_in_days <= 14:
-                cleaners_soon_kick.append((member.display_name, kick_in_days))
+                cleaners_soon_kick.append((member.display_name, f"in {kick_in_days} days"))
             else:
-                cleaner_list.append((member.display_name, kick_in_days))
+                cleaner_list.append((member.display_name, f"in {kick_in_days} days"))
         else:
             cleaner_in_days = 90 - days_since
             if cleaner_in_days < 0:
-                overdue_cleaners.append((member.display_name, abs(cleaner_in_days)))
+                overdue_cleaners.append((member.display_name, f"since {abs(cleaner_in_days)} days"))
             elif cleaner_in_days <= 14:
-                nearing_inactive.append((member.display_name, cleaner_in_days))
+                nearing_inactive.append((member.display_name, f"in {cleaner_in_days} days"))
             else:
                 if not minimal:
                     active_members.append((member.display_name, f"{days_since} days ago"))
@@ -376,7 +376,9 @@ async def check_inactive_members():
             continue
 
         days_since_join = (now - (member.joined_at or now)).days
-        if days_since_join < 180:
+        
+        # Skip early joiners only if they haven't hit the 90-day inactivity mark
+        if days_since_join < 180 and (last_active is None or (now - last_active).days < 90):
             continue
 
         last_active = activity_cache.get(member.id)
@@ -433,22 +435,35 @@ async def check_inactive_members():
 
         # 🚫 Kick after 180 days of inactivity (verification step)
         if cleaner_role in member.roles and last_active < kick_cutoff:
-            print(f"Preparing to flag {member.name} for kick verification")  # Debug log
-            staff_channel = bot.get_channel(STAFF_CHANNEL_ID)
-            if staff_channel:
-                embed = create_embed(
-                    title="⚠️ Kick candidate: Inactive >180 days",
-                    description=(
-                        f"{member.mention} has been inactive for over **{(now - last_active).days} days** "
-                        f"and still has the `Cleaner` role.\n"
-                        f"Joined: <t:{int(member.joined_at.timestamp())}:D>\n"
-                        f"Last active: <t:{int(last_active.timestamp())}:R>\n\n"
-                        f"Please verify before enabling the auto-kick."
-                    ),
-                    color=discord.Color.orange()
-                )
-                embed.set_footer(text="Auto-kick is currently disabled for safety.")
-                await staff_channel.send(embed=embed)
+            print(f"Preparing to kick {member.name}")  # Debug log
+            try:
+                await member.kick(reason="Inactive for more than 180 days")
+                print(f"Kicked: {member.name}")
+                if warning_channel:
+                    embed = create_embed(
+                        title="Member kicked for inactivity 🧹",
+                        description=f"{member.display_name} was kicked for 180+ days of inactivity.",
+                        color=discord.Color.red()
+                    )
+                    await warning_channel.send(embed=embed)
+            except discord.Forbidden:
+                print(f"No permission to kick {member.name}")
+            
+            # staff_channel = bot.get_channel(STAFF_CHANNEL_ID)
+            # if staff_channel:
+            #     embed = create_embed(
+            #         title="⚠️ Kick candidate: Inactive >180 days",
+            #         description=(
+            #             f"{member.mention} has been inactive for over **{(now - last_active).days} days** "
+            #             f"and still has the `Cleaner` role.\n"
+            #             f"Joined: <t:{int(member.joined_at.timestamp())}:D>\n"
+            #             f"Last active: <t:{int(last_active.timestamp())}:R>\n\n"
+            #             f"Please verify before enabling the auto-kick."
+            #         ),
+            #         color=discord.Color.orange()
+            #     )
+            #     embed.set_footer(text="Auto-kick is currently disabled for safety.")
+            #     await staff_channel.send(embed=embed)
             continue
 
         # 🧹 Mark as inactive if over 90 days and not yet a Cleaner

@@ -10,6 +10,8 @@ A Discord bot that automatically assigns the "Cleaner" role to members who have 
 - Kicks @Cleaner users after 6 months total inactivity
 - Exempts @Major and @General roles from being kicked
 - Posts original role list for admin reference
+- Activity cache for fast reports and exporting
+- Commands to export activity, report status, and debug unreadable channels
 
 ## 📦 Installation & Setup
 
@@ -130,12 +132,25 @@ journalctl -u discord-cleaner -f
 
 ---
 
+## 🛠️ Bot Commands
+
+Only members with the @General role can run these:
+
+- `!commands` – Lists all commands
+- `!lastactive @member` – Shows last activity and join date
+- `!exportactivity` – Exports a full CSV of all members' activity and roles
+- `!unreadable_channels` – Lists channels the bot cannot read
+- `!inactivity_report` – Lists all tracked activity
+- `!inactivity_report clean` – Shows only members near thresholds
+
+---
+
 ## 📝 Notes
 
-- The bot checks up to 100 messages per text channel for each user.
-- Voice channel presence resets inactivity counter.
-- The original roles removed are listed in the `#discussion-💬` warning post.
-- Admins can use this to manually restore roles if needed.
+- Bot scans 5000 messages per channel to build the activity cache
+- All timestamps are stored and displayed in UTC
+- Voice channel activity counts as active
+- The original roles are posted in #discussion-💬 for restoration
 
 ---
 

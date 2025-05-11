@@ -277,7 +277,7 @@ async def inactivity_report(ctx, *args):
         # Handle members who never became active
         if not last_active:
             if days_since_join >= 90 and not is_cleaner:
-                overdue_cleaners.append((member.display_name, f"never active, joined {days_since_join}d ago"))
+                overdue_cleaners.append((member.display_name, f"{days_since_join} days ago joined, never active"))
             elif not minimal:
                 uncached_members.append(member.display_name)
             continue
@@ -287,28 +287,28 @@ async def inactivity_report(ctx, *args):
         if is_cleaner:
             kick_in_days = 180 - days_since
             if kick_in_days <= 0:
-                cleaners_overdue_kick.append((member.display_name, f"since {abs(kick_in_days)} days"))
+                cleaners_overdue_kick.append((member.display_name, f"{abs(kick_in_days)} days overdue"))
             elif kick_in_days <= 14:
-                cleaners_soon_kick.append((member.display_name, f"in {kick_in_days} days"))
+                cleaners_soon_kick.append((member.display_name, f"{kick_in_days} days ahead"))
             else:
-                cleaner_list.append((member.display_name, f"in {kick_in_days} days"))
+                cleaner_list.append((member.display_name, f"{kick_in_days} days ahead"))
         else:
             cleaner_in_days = 90 - days_since
             if cleaner_in_days < 0:
-                overdue_cleaners.append((member.display_name, f"since {abs(cleaner_in_days)} days"))
+                overdue_cleaners.append((member.display_name, f"{abs(cleaner_in_days)} days overdue"))
             elif cleaner_in_days <= 14:
-                nearing_inactive.append((member.display_name, f"in {cleaner_in_days} days"))
+                nearing_inactive.append((member.display_name, f"{cleaner_in_days} days ahead"))
             else:
                 if not minimal:
                     active_members.append((member.display_name, f"{days_since} days ago"))
 
     # Sort all lists
-    nearing_inactive.sort(key=lambda x: x[1])
-    overdue_cleaners.sort(key=lambda x: int(str(x[1]).split()[0]) if isinstance(x[1], str) else x[1])
-    cleaners_soon_kick.sort(key=lambda x: x[1])
-    cleaners_overdue_kick.sort(key=lambda x: x[1])
-    cleaner_list.sort(key=lambda x: x[1])
-    active_members.sort(key=lambda x: int(x[1].split()[0]) if x[1] != "Unknown" else 999)
+    nearing_inactive.sort(key=lambda x: int(x[1].split()[0]))
+    overdue_cleaners.sort(key=lambda x: int(x[1].split()[0]))
+    cleaners_soon_kick.sort(key=lambda x: int(x[1].split()[0]))
+    cleaners_overdue_kick.sort(key=lambda x: int(x[1].split()[0]))
+    cleaner_list.sort(key=lambda x: int(x[1].split()[0]))
+    active_members.sort(key=lambda x: int(x[1].split()[0]))
 
     # Compose embed description
     desc = ""

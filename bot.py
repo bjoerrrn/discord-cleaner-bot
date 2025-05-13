@@ -321,8 +321,8 @@ async def inactivity_report(ctx, *args):
 
     add_section("✅ Active Members", active_members)
     add_section("⚠️ Members nearing inactivity (Cleaner role)", nearing_inactive)
-    add_section("🧹 Cleaners (not yet close to kick)", cleaner_list)
     add_section("⏳ Members overdue for Cleaner role", overdue_cleaners)
+    add_section("🧹 Cleaners (not yet close to kick)", cleaner_list)
     add_section("❗ Cleaners close to being kicked (≤14 days)", cleaners_soon_kick)
     add_section("🔥 Cleaners overdue for kick", cleaners_overdue_kick)
 
@@ -355,7 +355,7 @@ async def inactivity_report(ctx, *args):
     await ctx.send(embed=embed)
 
 
-@tasks.loop(hours=24)
+@tasks.loop(minutes=5)
 async def check_inactive_members():
     guild = bot.get_guild(GUILD_ID)
     if not guild:
@@ -374,15 +374,13 @@ async def check_inactive_members():
     for member in guild.members:
         if member.bot or any(r.id in EXEMPT_ROLE_IDS for r in member.roles):
             continue
-
+    
+        last_active = activity_cache.get(member.id)
         days_since_join = (now - (member.joined_at or now)).days
-        
-        # Skip early joiners only if they haven't hit the 90-day inactivity mark
+    
         if days_since_join < 180 and (last_active is None or (now - last_active).days < 90):
             continue
-
-        last_active = activity_cache.get(member.id)
-
+            
         cleaner_role = guild.get_role(CLEANER_ROLE_ID)
         soldier_role = guild.get_role(SOLDIER_ROLE_ID)
 

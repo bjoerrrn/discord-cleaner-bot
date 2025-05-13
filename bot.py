@@ -355,7 +355,7 @@ async def inactivity_report(ctx, *args):
     await ctx.send(embed=embed)
 
 
-@tasks.loop(minutes=5)
+@tasks.loop(hours=24)
 async def check_inactive_members():
     guild = bot.get_guild(GUILD_ID)
     if not guild:

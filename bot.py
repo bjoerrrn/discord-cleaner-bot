@@ -6,7 +6,9 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from typing import Dict, Tuple
 from io import StringIO
+from asyncio import Lock
 
+inactivity_check_lock = Lock()
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -74,16 +76,6 @@ async def refresh_activity_cache(guild: discord.Guild):
 
     cache_progress = 100
     cache_ready = True
-
-
-@bot.event
-async def on_ready():
-    print(f"Bot connected as {bot.user}")
-    guild = bot.get_guild(GUILD_ID)
-    if guild:
-        print("Refreshing activity cache immediately...")
-        await refresh_activity_cache(guild)  # 👈 Initial cache fill
-    check_inactive_members.start()
 
 
 @bot.event
@@ -158,7 +150,7 @@ async def unreadable_channels(ctx):
         await ctx.send(
             "⚠️ Cannot read these channels:\n" + "\n".join(f"• #{name}" for name in unreadable)
         )
-
+        
 
 @bot.command(help="Shows the last known activity date and server join date for a specific member.")
 async def lastactive(ctx, member: discord.Member):
@@ -353,50 +345,136 @@ async def inactivity_report(ctx, *args):
 
     embed = create_embed("🕓 Inactivity Report", desc.strip(), discord.Color.blurple())
     await ctx.send(embed=embed)
-
-
-@tasks.loop(hours=24)
-async def check_inactive_members():
-    guild = bot.get_guild(GUILD_ID)
-    if not guild:
-        print("Guild not found.")
-        return
-
-    now = datetime.now(timezone.utc)
-    inactive_cutoff = now - timedelta(days=90)
-    kick_cutoff = now - timedelta(days=180)
-    warning_channel = guild.get_channel(WARNING_CHANNEL_ID)
-
-    print(f"Activity cache before refresh: {len(activity_cache)}")  # Debug log
-    await refresh_activity_cache(guild)
-    print(f"Activity cache after refresh: {len(activity_cache)}")  # Debug log
-
-    for member in guild.members:
-        if member.bot or any(r.id in EXEMPT_ROLE_IDS for r in member.roles):
-            continue
     
-        last_active = activity_cache.get(member.id)
-        days_since_join = (now - (member.joined_at or now)).days
     
-        if days_since_join < 180 and (last_active is None or (now - last_active).days < 90):
-            continue
-            
-        cleaner_role = guild.get_role(CLEANER_ROLE_ID)
-        soldier_role = guild.get_role(SOLDIER_ROLE_ID)
-
-        # 🧹 Handle members who never became active
-        if last_active is None:
-            if cleaner_role not in member.roles and days_since_join >= 90:
+async def check_inactive_members_function():
+    async with inactivity_check_lock:
+        print("Running inactivity check...")
+        
+        guild = bot.get_guild(GUILD_ID)
+        if not guild:
+            print("Guild not found.")
+            return
+    
+        now = datetime.now(timezone.utc)
+        inactive_cutoff = now - timedelta(days=90)
+        kick_cutoff = now - timedelta(days=180)
+        warning_channel = guild.get_channel(WARNING_CHANNEL_ID)
+    
+        print(f"Activity cache before refresh: {len(activity_cache)}")  # Debug log
+        await refresh_activity_cache(guild)
+        print(f"Activity cache after refresh: {len(activity_cache)}")  # Debug log
+    
+        for member in guild.members:
+            if member.bot or any(r.id in EXEMPT_ROLE_IDS for r in member.roles):
+                print(f"Skipping {member.display_name} ({member.id}): Bot or exempt role")
+                continue
+        
+            last_active = activity_cache.get(member.id)
+            days_since_join = (now - (member.joined_at or now)).days
+        
+            if days_since_join < 180 and (last_active is None or (now - last_active).days < 90):
+                print(f"Skipping {member.display_name} ({member.id}): Joined {days_since_join} days ago or active in last 90 days")
+                continue
+                
+            cleaner_role = guild.get_role(CLEANER_ROLE_ID)
+            soldier_role = guild.get_role(SOLDIER_ROLE_ID)
+    
+            # 🧹 Handle members who never became active
+            if last_active is None:
+                print(f"{member.display_name} ({member.id}) has never been active, joined {days_since_join} days ago")
+                if cleaner_role not in member.roles and days_since_join >= 90:
+                    roles_to_remove = [
+                        r for r in member.roles
+                        if r.id not in EXEMPT_ROLE_IDS and r != guild.default_role
+                    ]
+                    try:
+                        if roles_to_remove:
+                            await member.remove_roles(*roles_to_remove, reason="Marked inactive (never active)")
+    
+                        if cleaner_role:
+                            await member.add_roles(cleaner_role, reason="Inactive (never active)")
+                            if warning_channel:
+                                await warning_channel.send(embed=create_embed(
+                                    "Inactivity detected 🙁",
+                                    f"Attention {member.mention}, you have been marked as inactive and therefore "
+                                    f"degraded to the `Cleaner` role. 🙁🧹 Sorry, there is no kitchen service on this server. 😂\n"
+                                    f"Please become active to avoid removal. 🙏🏻\n\n"
+                                    f"For Admin's reference: Original roles before cleanup: "
+                                    f"`{', '.join([r.name for r in roles_to_remove]) or 'None'}`."
+                                ))
+    
+                        if soldier_role and soldier_role not in member.roles:
+                            await member.add_roles(soldier_role, reason="Maintain Soldier role")
+    
+                    except discord.Forbidden:
+                        print(f"No permission to update roles for {member.name}")
+                continue
+    
+            days_since = (now - last_active).days
+    
+            # ✅ Became active again
+            if cleaner_role in member.roles and last_active >= inactive_cutoff:
+                print(f"{member.display_name} ({member.id}) is Cleaner but became active again")
+                try:
+                    await member.remove_roles(cleaner_role, reason="Active again")
+                    if warning_channel:
+                        await warning_channel.send(embed=create_embed(
+                            "Member active again ✅",
+                            f"{member.mention} became active again. `Cleaner` role removed.\n"
+                            f"<@&{GENERAL_ROLE_ID}> may want to restore previous roles.",
+                            discord.Color.green()
+                        ))
+                except discord.Forbidden:
+                    print(f"No permission to update roles for {member.name}")
+                continue
+    
+            # 🚫 Kick after 180 days of inactivity (verification step)
+            if cleaner_role in member.roles and last_active < kick_cutoff:
+                print(f"{member.display_name} ({member.id}) is overdue for kick ({(now - last_active).days} days inactive)")
+                try:
+                    await member.kick(reason="Inactive for more than 180 days")
+                    print(f"Kicked: {member.name}")
+                    if warning_channel:
+                        embed = create_embed(
+                            title="Member kicked for inactivity 🧹",
+                            description=f"{member.display_name} was kicked for 180+ days of inactivity.",
+                            color=discord.Color.red()
+                        )
+                        await warning_channel.send(embed=embed)
+                except discord.Forbidden:
+                    print(f"No permission to kick {member.name}")
+                
+                # staff_channel = bot.get_channel(STAFF_CHANNEL_ID)
+                # if staff_channel:
+                #     embed = create_embed(
+                #         title="⚠️ Kick candidate: Inactive >180 days",
+                #         description=(
+                #             f"{member.mention} has been inactive for over **{(now - last_active).days} days** "
+                #             f"and still has the `Cleaner` role.\n"
+                #             f"Joined: <t:{int(member.joined_at.timestamp())}:D>\n"
+                #             f"Last active: <t:{int(last_active.timestamp())}:R>\n\n"
+                #             f"Please verify before enabling the auto-kick."
+                #         ),
+                #         color=discord.Color.orange()
+                #     )
+                #     embed.set_footer(text="Auto-kick is currently disabled for safety.")
+                #     await staff_channel.send(embed=embed)
+                continue
+    
+            # 🧹 Mark as inactive if over 90 days and not yet a Cleaner
+            if cleaner_role not in member.roles and last_active < inactive_cutoff:
+                print(f"{member.display_name} ({member.id}) is overdue for Cleaner role ({(now - last_active).days} days inactive)")
                 roles_to_remove = [
                     r for r in member.roles
-                    if r.name not in EXEMPT_ROLES and r != guild.default_role
+                    if r.id not in EXEMPT_ROLE_IDS and r != guild.default_role
                 ]
                 try:
                     if roles_to_remove:
-                        await member.remove_roles(*roles_to_remove, reason="Marked inactive (never active)")
-
+                        await member.remove_roles(*roles_to_remove, reason="Marked inactive")
+    
                     if cleaner_role:
-                        await member.add_roles(cleaner_role, reason="Inactive (never active)")
+                        await member.add_roles(cleaner_role, reason="Inactive 90+ days")
                         if warning_channel:
                             await warning_channel.send(embed=create_embed(
                                 "Inactivity detected 🙁",
@@ -406,90 +484,50 @@ async def check_inactive_members():
                                 f"For Admin's reference: Original roles before cleanup: "
                                 f"`{', '.join([r.name for r in roles_to_remove]) or 'None'}`."
                             ))
-
+    
                     if soldier_role and soldier_role not in member.roles:
                         await member.add_roles(soldier_role, reason="Maintain Soldier role")
-
+    
                 except discord.Forbidden:
                     print(f"No permission to update roles for {member.name}")
-            continue
 
-        days_since = (now - last_active).days
 
-        # ✅ Became active again
-        if cleaner_role in member.roles and last_active >= inactive_cutoff:
-            try:
-                await member.remove_roles(cleaner_role, reason="Active again")
-                if warning_channel:
-                    await warning_channel.send(embed=create_embed(
-                        "Member active again ✅",
-                        f"{member.mention} became active again. `Cleaner` role removed.\n"
-                        f"<@&{GENERAL_ROLE_ID}> may want to restore previous roles.",
-                        discord.Color.green()
-                    ))
-            except discord.Forbidden:
-                print(f"No permission to update roles for {member.name}")
-            continue
+@bot.command(name="run_inactivity_check", aliases=["check_inactive", "manual_inactive_check"])
+@commands.has_permissions(administrator=True)
+async def run_inactivity_check(ctx):
+    if inactivity_check_lock.locked():
+        await ctx.send("⚠️ Inactivity check is already running. Please wait.")
+        return
 
-        # 🚫 Kick after 180 days of inactivity (verification step)
-        if cleaner_role in member.roles and last_active < kick_cutoff:
-            print(f"Preparing to kick {member.name}")  # Debug log
-            try:
-                await member.kick(reason="Inactive for more than 180 days")
-                print(f"Kicked: {member.name}")
-                if warning_channel:
-                    embed = create_embed(
-                        title="Member kicked for inactivity 🧹",
-                        description=f"{member.display_name} was kicked for 180+ days of inactivity.",
-                        color=discord.Color.red()
-                    )
-                    await warning_channel.send(embed=embed)
-            except discord.Forbidden:
-                print(f"No permission to kick {member.name}")
-            
-            # staff_channel = bot.get_channel(STAFF_CHANNEL_ID)
-            # if staff_channel:
-            #     embed = create_embed(
-            #         title="⚠️ Kick candidate: Inactive >180 days",
-            #         description=(
-            #             f"{member.mention} has been inactive for over **{(now - last_active).days} days** "
-            #             f"and still has the `Cleaner` role.\n"
-            #             f"Joined: <t:{int(member.joined_at.timestamp())}:D>\n"
-            #             f"Last active: <t:{int(last_active.timestamp())}:R>\n\n"
-            #             f"Please verify before enabling the auto-kick."
-            #         ),
-            #         color=discord.Color.orange()
-            #     )
-            #     embed.set_footer(text="Auto-kick is currently disabled for safety.")
-            #     await staff_channel.send(embed=embed)
-            continue
+    await ctx.send("✅ Running inactivity check...")
+    async with inactivity_check_lock:
+        await check_inactive_members_function()
+    await ctx.send("✅ Inactivity check completed.")
 
-        # 🧹 Mark as inactive if over 90 days and not yet a Cleaner
-        if cleaner_role not in member.roles and last_active < inactive_cutoff:
-            roles_to_remove = [
-                r for r in member.roles
-                if r.name not in EXEMPT_ROLES and r != guild.default_role
-            ]
-            try:
-                if roles_to_remove:
-                    await member.remove_roles(*roles_to_remove, reason="Marked inactive")
 
-                if cleaner_role:
-                    await member.add_roles(cleaner_role, reason="Inactive 90+ days")
-                    if warning_channel:
-                        await warning_channel.send(embed=create_embed(
-                            "Inactivity detected 🙁",
-                            f"Attention {member.mention}, you have been marked as inactive and therefore "
-                            f"degraded to the `Cleaner` role. 🙁🧹 Sorry, there is no kitchen service on this server. 😂\n"
-                            f"Please become active to avoid removal. 🙏🏻\n\n"
-                            f"For Admin's reference: Original roles before cleanup: "
-                            f"`{', '.join([r.name for r in roles_to_remove]) or 'None'}`."
-                        ))
+@bot.command(help="Shows the next scheduled run of the inactivity check.")
+@commands.has_role(GENERAL_ROLE_ID)
+async def next_check(ctx):
+    next_run = check_inactive_members_task.next_iteration
+    if next_run:
+        await ctx.send(f"🕓 Next inactivity check is scheduled for: <t:{int(next_run.timestamp())}:F>")
+    else:
+        await ctx.send("⚠️ The inactivity check task has not started yet.")
 
-                if soldier_role and soldier_role not in member.roles:
-                    await member.add_roles(soldier_role, reason="Maintain Soldier role")
 
-            except discord.Forbidden:
-                print(f"No permission to update roles for {member.name}")
-                  
+@tasks.loop(hours=24)
+async def check_inactive_members_task():
+    await check_inactive_members_function()
+
+
+@bot.event
+async def on_ready():
+    print(f"Bot connected as {bot.user}")
+    guild = bot.get_guild(GUILD_ID)
+    if guild:
+        print("Refreshing activity cache immediately...")
+        await refresh_activity_cache(guild)  # 👈 Initial cache fill
+    check_inactive_members_task.start()
+
+
 bot.run(TOKEN)

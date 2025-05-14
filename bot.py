@@ -1,6 +1,7 @@
 import os
 import discord
 import csv
+import asyncio
 from discord.ext import tasks, commands
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
@@ -40,19 +41,22 @@ def create_embed(title: str, description: str, color=discord.Color.orange()):
 
 
 async def get_last_activity(member: discord.Member, guild: discord.Guild) -> datetime:
-    """Scans all channels to determine the most recent message timestamp from the member."""
-    now = datetime.now(timezone.utc)
     latest_msg_time = member.joined_at or datetime(1970, 1, 1, tzinfo=timezone.utc)
 
     for channel in guild.text_channels:
         if not channel.permissions_for(guild.me).read_messages:
             continue
+        if channel.last_message_id is None:
+            continue
         try:
-            async for msg in channel.history(limit=5000, oldest_first=False):
+            messages = await asyncio.wait_for(channel.history(limit=5000).flatten(), timeout=20.0)
+            for msg in messages:
                 if msg.author.id == member.id:
-                    if msg.created_at > latest_msg_time:
-                        latest_msg_time = msg.created_at.replace(tzinfo=timezone.utc)
-        except (discord.Forbidden, discord.HTTPException):
+                    latest_msg_time = max(latest_msg_time, msg.created_at.replace(tzinfo=timezone.utc))
+        except asyncio.TimeoutError:
+            print(f"⏰ Timeout fetching history in #{channel.name} (ID: {channel.id})")
+        except (discord.Forbidden, discord.HTTPException) as e:
+            print(f"⚠️ Error reading #{channel.name} (ID: {channel.id}): {e}")
             continue
 
     return latest_msg_time
@@ -348,22 +352,23 @@ async def inactivity_report(ctx, *args):
     
     
 async def check_inactive_members_function():
+    print("Waiting for inactivity_check_lock...")
     async with inactivity_check_lock:
-        print("Running inactivity check...")
+        print("Acquired inactivity_check_lock, starting check...")
         
         guild = bot.get_guild(GUILD_ID)
         if not guild:
             print("Guild not found.")
             return
     
+        print(f"Activity cache before refresh: {len(activity_cache)}")  # Debug log
+        await refresh_activity_cache(guild)
+        print(f"Activity cache after refresh: {len(activity_cache)}")  # Debug log
+    
         now = datetime.now(timezone.utc)
         inactive_cutoff = now - timedelta(days=90)
         kick_cutoff = now - timedelta(days=180)
         warning_channel = guild.get_channel(WARNING_CHANNEL_ID)
-    
-        print(f"Activity cache before refresh: {len(activity_cache)}")  # Debug log
-        await refresh_activity_cache(guild)
-        print(f"Activity cache after refresh: {len(activity_cache)}")  # Debug log
     
         for member in guild.members:
             if member.bot or any(r.id in EXEMPT_ROLE_IDS for r in member.roles):
@@ -522,12 +527,8 @@ async def check_inactive_members_task():
 
 @bot.event
 async def on_ready():
-    print(f"Bot connected as {bot.user}")
-    guild = bot.get_guild(GUILD_ID)
-    if guild:
-        print("Refreshing activity cache immediately...")
-        await refresh_activity_cache(guild)  # 👈 Initial cache fill
-    check_inactive_members_task.start()
+    print(f"Logged in as {bot.user}")
+    await check_inactive_members_function()
 
 
 bot.run(TOKEN)

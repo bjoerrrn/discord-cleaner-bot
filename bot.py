@@ -15,12 +15,18 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("DISCORD_GUILD_ID"))
 
+# IDs
 CLEANER_ROLE_ID = 1225867465259618396
 SOLDIER_ROLE_ID = 1109506946689671199
 EXEMPT_ROLE_IDS = [1109510121454837822, 1269752542515040477]
 WARNING_CHANNEL_ID = 1109096955252068384
 GENERAL_ROLE_ID = 1269752542515040477  
 STAFF_CHANNEL_ID = 1194194222702661632 
+
+# Constants
+INACTIVITY_THRESHOLD = 90
+KICK_THRESHOLD = 180
+MAX_MESSAGE_LOOKBACK = 5000
 
 intents = discord.Intents.default()
 intents.members = True
@@ -49,7 +55,7 @@ async def get_last_activity(member: discord.Member, guild: discord.Guild) -> dat
         if channel.last_message_id is None:
             continue
         try:
-            async for msg in channel.history(limit=5000):
+            async for msg in channel.history(limit=MAX_MESSAGE_LOOKBACK):
                 if msg.author.id == member.id:
                     latest_msg_time = max(latest_msg_time, msg.created_at.replace(tzinfo=timezone.utc))
         except asyncio.TimeoutError:
@@ -79,6 +85,10 @@ async def refresh_activity_cache(guild: discord.Guild):
 
     cache_progress = 100
     cache_ready = True
+    
+    
+def has_role(member, role_id):
+    return any(role.id == role_id for role in member.roles)
 
 
 @bot.event
@@ -93,6 +103,17 @@ async def on_command_error(ctx, error):
         await staff_channel.send(embed=embed)
     else:
         print("Staff channel not found for error reporting.")
+
+
+@bot.event
+async def on_message_edit(before, after):
+    if after.author.bot:
+        return  # Ignore bots
+
+    if cache_ready:
+        activity_cache[after.author.id] = datetime.now(timezone.utc)
+        
+    await bot.process_commands(message)  # Always allow commands to run
         
         
 @bot.event
@@ -110,10 +131,6 @@ async def on_message(message):
 @bot.command(name="commands", help="Displays a list of all available bot commands (General role only).")
 @commands.has_role(GENERAL_ROLE_ID)
 async def list_commands(ctx):
-    if not cache_ready:
-        await ctx.send(f"⏳ Please wait, I'm still scanning activity. Status: {cache_progress}%. Try again in a few minutes.")
-        return
-
     embed = discord.Embed(
         title="Available Bot Commands",
         color=discord.Color.blue()
@@ -131,10 +148,6 @@ async def list_commands(ctx):
 @bot.command(help="Lists all channels the bot cannot read (due to missing permissions).")
 @commands.has_role(GENERAL_ROLE_ID)
 async def unreadable_channels(ctx):
-    if not cache_ready:
-        await ctx.send(f"⏳ Please wait, I'm still scanning activity. Status: {cache_progress}%. Try again in a few minutes.")
-        return
-
     guild = bot.get_guild(GUILD_ID)
     unreadable = [
         channel.name for channel in guild.text_channels
@@ -256,7 +269,7 @@ async def inactivity_report(ctx, *args):
 
         # Handle members who never became active
         if not last_active:
-            if days_since_join >= 90 and not is_cleaner:
+            if days_since_join >= INACTIVITY_THRESHOLD and not is_cleaner:
                 overdue_cleaners.append((member.display_name, f"{days_since_join} days ago joined, never active"))
             elif not minimal:
                 uncached_members.append(member.display_name)
@@ -265,7 +278,7 @@ async def inactivity_report(ctx, *args):
         days_since = (now - last_active).days
 
         if is_cleaner:
-            kick_in_days = 180 - days_since
+            kick_in_days = KICK_THRESHOLD - days_since
             if kick_in_days <= 0:
                 cleaners_overdue_kick.append((member.display_name, f"{abs(kick_in_days)} days overdue"))
             elif kick_in_days <= 14:
@@ -273,7 +286,7 @@ async def inactivity_report(ctx, *args):
             else:
                 cleaner_list.append((member.display_name, f"{kick_in_days} days ahead"))
         else:
-            cleaner_in_days = 90 - days_since
+            cleaner_in_days = INACTIVITY_THRESHOLD - days_since
             if cleaner_in_days < 0:
                 overdue_cleaners.append((member.display_name, f"{abs(cleaner_in_days)} days overdue"))
             elif cleaner_in_days <= 14:
@@ -350,8 +363,8 @@ async def check_inactive_members_function():
         print(f"Activity cache after refresh: {len(activity_cache)}")  # Debug log
     
         now = datetime.now(timezone.utc)
-        inactive_cutoff = now - timedelta(days=90)
-        kick_cutoff = now - timedelta(days=180)
+        inactive_cutoff = now - timedelta(days=INACTIVITY_THRESHOLD)
+        kick_cutoff = now - timedelta(days=KICK_THRESHOLD)
         warning_channel = guild.get_channel(WARNING_CHANNEL_ID)
     
         for member in guild.members:
@@ -362,8 +375,8 @@ async def check_inactive_members_function():
             last_active = activity_cache.get(member.id)
             days_since_join = (now - (member.joined_at or now)).days
         
-            if days_since_join < 180 and (last_active is None or (now - last_active).days < 90):
-                print(f"Skipping {member.display_name} ({member.id}): Joined {days_since_join} days ago or active in last 90 days")
+            if days_since_join < KICK_THRESHOLD and (last_active is None or (now - last_active).days < INACTIVITY_THRESHOLD):
+                print(f"Skipping {member.display_name} ({member.id}): Joined {days_since_join} days ago or active in last {INACTIVITY_THRESHOLD} days")
                 continue
                 
             cleaner_role = guild.get_role(CLEANER_ROLE_ID)
@@ -372,7 +385,7 @@ async def check_inactive_members_function():
             # 🧹 Handle members who never became active
             if last_active is None:
                 print(f"{member.display_name} ({member.id}) has never been active, joined {days_since_join} days ago")
-                if cleaner_role not in member.roles and days_since_join >= 90:
+                if cleaner_role not in member.roles and days_since_join >= INACTIVITY_THRESHOLD:
                     roles_to_remove = [
                         r for r in member.roles
                         if r.id not in EXEMPT_ROLE_IDS and r != guild.default_role
@@ -418,16 +431,16 @@ async def check_inactive_members_function():
                     print(f"No permission to update roles for {member.name}")
                 continue
     
-            # 🚫 Kick after 180 days of inactivity (verification step)
+            # 🚫 Kick after KICK_THRESHOLD days of inactivity (verification step)
             if cleaner_role in member.roles and last_active < kick_cutoff:
                 print(f"{member.display_name} ({member.id}) is overdue for kick ({(now - last_active).days} days inactive)")
                 try:
-                    await member.kick(reason="Inactive for more than 180 days")
+                    await member.kick(reason="Inactive for more than {KICK_THRESHOLD} days")
                     print(f"Kicked: {member.name}")
                     if warning_channel:
                         embed = create_embed(
                             title="Member kicked for inactivity 🧹",
-                            description=f"{member.display_name} was kicked for 180+ days of inactivity.",
+                            description=f"{member.display_name} was kicked for {KICK_THRESHOLD}+ days of inactivity.",
                             color=discord.Color.red()
                         )
                         await warning_channel.send(embed=embed)
@@ -437,7 +450,7 @@ async def check_inactive_members_function():
                 # staff_channel = bot.get_channel(STAFF_CHANNEL_ID)
                 # if staff_channel:
                 #     embed = create_embed(
-                #         title="⚠️ Kick candidate: Inactive >180 days",
+                #         title="⚠️ Kick candidate: Inactive >KICK_THRESHOLD days",
                 #         description=(
                 #             f"{member.mention} has been inactive for over **{(now - last_active).days} days** "
                 #             f"and still has the `Cleaner` role.\n"
@@ -451,7 +464,7 @@ async def check_inactive_members_function():
                 #     await staff_channel.send(embed=embed)
                 continue
     
-            # 🧹 Mark as inactive if over 90 days and not yet a Cleaner
+            # 🧹 Mark as inactive if over INACTIVITY_THRESHOLD days and not yet a Cleaner
             if cleaner_role not in member.roles and last_active < inactive_cutoff:
                 print(f"{member.display_name} ({member.id}) is overdue for Cleaner role ({(now - last_active).days} days inactive)")
                 roles_to_remove = [
@@ -463,7 +476,7 @@ async def check_inactive_members_function():
                         await member.remove_roles(*roles_to_remove, reason="Marked inactive")
     
                     if cleaner_role:
-                        await member.add_roles(cleaner_role, reason="Inactive 90+ days")
+                        await member.add_roles(cleaner_role, reason="Inactive {INACTIVITY_THRESHOLD}+ days")
                         if warning_channel:
                             await warning_channel.send(embed=create_embed(
                                 "Inactivity detected 🙁",

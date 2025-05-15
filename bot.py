@@ -49,8 +49,7 @@ async def get_last_activity(member: discord.Member, guild: discord.Guild) -> dat
         if channel.last_message_id is None:
             continue
         try:
-            messages = await asyncio.wait_for(channel.history(limit=5000).flatten(), timeout=20.0)
-            for msg in messages:
+            async for msg in channel.history(limit=5000):
                 if msg.author.id == member.id:
                     latest_msg_time = max(latest_msg_time, msg.created_at.replace(tzinfo=timezone.utc))
         except asyncio.TimeoutError:
@@ -109,11 +108,8 @@ async def on_message(message):
         
         
 @bot.command(name="commands", help="Displays a list of all available bot commands (General role only).")
+@commands.has_role(GENERAL_ROLE_ID)
 async def list_commands(ctx):
-    if not any(role.id == GENERAL_ROLE_ID for role in ctx.author.roles):
-        await ctx.send("❌ You do not have permission to use this command.")
-        return
-
     if not cache_ready:
         await ctx.send(f"⏳ Please wait, I'm still scanning activity. Status: {cache_progress}%. Try again in a few minutes.")
         return
@@ -133,11 +129,8 @@ async def list_commands(ctx):
 
 
 @bot.command(help="Lists all channels the bot cannot read (due to missing permissions).")
+@commands.has_role(GENERAL_ROLE_ID)
 async def unreadable_channels(ctx):
-    if not any(role.id == GENERAL_ROLE_ID for role in ctx.author.roles):
-        await ctx.send("❌ You do not have permission to use this command.")
-        return
-
     if not cache_ready:
         await ctx.send(f"⏳ Please wait, I'm still scanning activity. Status: {cache_progress}%. Try again in a few minutes.")
         return
@@ -157,11 +150,8 @@ async def unreadable_channels(ctx):
         
 
 @bot.command(help="Shows the last known activity date and server join date for a specific member.")
+@commands.has_role(GENERAL_ROLE_ID)
 async def lastactive(ctx, member: discord.Member):
-    if not any(role.id == GENERAL_ROLE_ID for role in ctx.author.roles):
-        await ctx.send("❌ You do not have permission to use this command.")
-        return
-
     if not cache_ready:
         await ctx.send(f"⏳ Please wait, I'm still scanning activity. Status: {cache_progress}%. Try again in a few minutes.")
         return
@@ -186,11 +176,8 @@ async def lastactive(ctx, member: discord.Member):
     
     
 @bot.command(help="Exports the activity cache as a CSV file, including inactive members and their roles.")
+@commands.has_role(GENERAL_ROLE_ID)
 async def exportactivity(ctx):
-    if not any(role.id == GENERAL_ROLE_ID for role in ctx.author.roles):
-        await ctx.send("❌ You do not have permission to use this command.")
-        return
-
     if not cache_ready:
         await ctx.send(f"⏳ Please wait, I'm still scanning activity. Status: {cache_progress}%. Try again in a few minutes.")
         return
@@ -232,11 +219,8 @@ async def exportactivity(ctx):
 
 
 @bot.command(help="Displays an inactivity report. Add 'clean' to only show members near Cleaner or kick thresholds.")
+@commands.has_role(GENERAL_ROLE_ID)
 async def inactivity_report(ctx, *args):
-    if not any(role.id == GENERAL_ROLE_ID for role in ctx.author.roles):
-        await ctx.send("❌ You do not have permission to use this command.")
-        return
-
     if not cache_ready:
         await ctx.send(f"⏳ Please wait, I'm still scanning activity. Status: {cache_progress}%. Try again in a few minutes.")
         return
@@ -497,8 +481,8 @@ async def check_inactive_members_function():
                     print(f"No permission to update roles for {member.name}")
 
 
-@bot.command(name="run_inactivity_check", aliases=["check_inactive", "manual_inactive_check"])
-@commands.has_permissions(administrator=True)
+@bot.command(name="run_inactivity_check", aliases=["check_inactive", "manual_inactive_check"], help="Runs the inactivity check manually.")
+@commands.has_role(GENERAL_ROLE_ID)
 async def run_inactivity_check(ctx):
     if inactivity_check_lock.locked():
         await ctx.send("⚠️ Inactivity check is already running. Please wait.")
@@ -510,14 +494,26 @@ async def run_inactivity_check(ctx):
     await ctx.send("✅ Inactivity check completed.")
 
 
-@bot.command(help="Shows the next scheduled run of the inactivity check.")
+@bot.command(name="next_check", help="Shows the next scheduled run of the inactivity check.")
 @commands.has_role(GENERAL_ROLE_ID)
 async def next_check(ctx):
     next_run = check_inactive_members_task.next_iteration
     if next_run:
-        await ctx.send(f"🕓 Next inactivity check is scheduled for: <t:{int(next_run.timestamp())}:F>")
+        await ctx.send(
+            embed=discord.Embed(
+                title="🕒 Next Inactivity Check",
+                description=f"The next check is scheduled for: <t:{int(next_run.timestamp())}:F>",
+                color=discord.Color.green()
+            )
+        )
     else:
-        await ctx.send("⚠️ The inactivity check task has not started yet.")
+        await ctx.send(
+            embed=discord.Embed(
+                title="⚠️ Task Not Running",
+                description="The background task has not been started or the next run time is not available.",
+                color=discord.Color.red()
+            )
+        )
 
 
 @tasks.loop(hours=24)
@@ -527,8 +523,9 @@ async def check_inactive_members_task():
 
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user}")
-    await check_inactive_members_function()
+    print(f"✅ Logged in as {bot.user} (ID: {bot.user.id})")
+    if not check_inactive_members_task.is_running():
+        check_inactive_members_task.start()
 
 
 bot.run(TOKEN)

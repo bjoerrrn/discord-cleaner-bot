@@ -57,7 +57,7 @@ async def get_last_activity(member: discord.Member, guild: discord.Guild) -> dat
         try:
             async for msg in channel.history(limit=MAX_MESSAGE_LOOKBACK):
                 if msg.author.id == member.id:
-                    latest_msg_time = max(latest_msg_time, msg.created_at.replace(tzinfo=timezone.utc))
+                    latest_msg_time = max(latest_msg_time, msg.created_at)
         except asyncio.TimeoutError:
             print(f"⏰ Timeout fetching history in #{channel.name} (ID: {channel.id})")
         except (discord.Forbidden, discord.HTTPException) as e:
@@ -78,6 +78,8 @@ async def refresh_activity_cache(guild: discord.Guild):
 
     for index, member in enumerate(non_bot_members, start=1):
         last_active = await get_last_activity(member, guild)
+        print(f"{member.display_name} last active: {last_active.isoformat()}")
+        
         activity_cache[member.id] = last_active
 
         # Update percentage progress
@@ -112,8 +114,6 @@ async def on_message_edit(before, after):
 
     if cache_ready:
         activity_cache[after.author.id] = datetime.now(timezone.utc)
-        
-    await bot.process_commands(message)  # Always allow commands to run
         
         
 @bot.event
@@ -502,8 +502,11 @@ async def run_inactivity_check(ctx):
         return
 
     await ctx.send("✅ Running inactivity check...")
-    async with inactivity_check_lock:
+    try:
         await check_inactive_members_function()
+    except Exception as e:
+        print(f"❌ Inactivity check failed: {e}")
+        await ctx.send(f"❌ Inactivity check failed: {e}")
     await ctx.send("✅ Inactivity check completed.")
 
 

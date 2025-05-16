@@ -5,13 +5,14 @@ A Discord bot that automatically assigns the "Cleaner" role to members who have 
 ## Features
 
 - Assigns the @Cleaner role to users inactive for ≥ 3 months
-- Posts a public warning message in #discussion-💬
 - Removes all roles except @Soldier
-- Kicks @Cleaner users after 6 months total inactivity
+- Posts a warning in #discussion-💬 when roles are changed
+- Posts original roles in the same channel for admin reference
+- Kicks @Cleaner users after 6 months of inactivity
 - Exempts @Major and @General roles from being kicked
-- Posts original role list for admin reference
-- Activity cache for fast reports and exporting
-- Commands to export activity, report status, and debug unreadable channels
+- Activity cache improves performance and avoids repeated scanning
+- Commands for status reports, exporting activity, and debugging
+- Systemd integration for auto-start and log viewing
 
 ## 📦 Installation & Setup
 
@@ -19,7 +20,7 @@ A Discord bot that automatically assigns the "Cleaner" role to members who have 
 
 - Python 3.9+
 - A registered Discord bot: https://discord.com/developers/applications
-- The bot must have the following permissions:
+- The bot must have these permissions:
   - Manage Roles
   - Kick Members
   - Read Message History
@@ -62,42 +63,41 @@ DISCORD_TOKEN=your-bot-token-here
 DISCORD_GUILD_ID=123456789012345678
 ```
 
-### 6. Registering Your Bot in Discord
+### 6. Register Your Bot
 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications)
-2. Click “New Application” and give it a name
-3. Under “Bot”, click “Add Bot”
-4. Click “Reset Token” → Copy this token and add it to your `.env`
+2. Click “New Application” → Name it
+3. Under “Bot” → “Add Bot”
+4. Click “Reset Token” → Add it to your `.env`
 
 ### 7. Invite the Bot to Your Server
 
-1. In the Developer Portal, go to `OAuth2 > URL Generator`
-2. Under scopes, select:
-   - `bot`
-3. Under Bot Permissions, select:
+1. In the Developer Portal → `OAuth2 > URL Generator`
+2. Scopes: `bot`
+3. Bot Permissions:
    - Read Messages/View Channels
    - Send Messages
    - Manage Roles
    - Kick Members
-4. Copy the generated URL and open it in your browser to invite the bot
+4. Open the generated URL to invite the bot
 
-### 8. Get Your Discord Guild (Server) ID
+### 8. Get Your Server (Guild) ID
 
-1. In Discord: `User Settings > Advanced > Enable Developer Mode`
-2. Right-click your server icon → Click "Copy Server ID"
-3. Paste this ID into the `.env` file as `DISCORD_GUILD_ID`
+1. Enable Developer Mode in Discord: `User Settings > Advanced`
+2. Right-click server icon → “Copy Server ID”
+3. Paste into `.env` as `DISCORD_GUILD_ID`
 
 ---
 
 ## 🔁 Run the Bot Automatically with systemd
 
-### 1. Create a systemd Service File
+### 1. Create a systemd Service
 
 ```bash
 sudo nano /etc/systemd/system/discord-cleaner.service
 ```
 
-Paste the following, updating paths as needed:
+Paste and edit paths:
 
 ```ini
 [Unit]
@@ -136,21 +136,23 @@ journalctl -u discord-cleaner -f
 
 Only members with the @General role can run these:
 
-- `!commands` – Lists all commands
-- `!lastactive @member` – Shows last activity and join date
-- `!exportactivity` – Exports a full CSV of all members' activity and roles
-- `!unreadable_channels` – Lists channels the bot cannot read
-- `!inactivity_report` – Lists all tracked activity
-- `!inactivity_report clean` – Shows only members near thresholds
+- `!commands` – Lists all available commands
+- `!lastactive @member` – Shows last message, voice, and join date
+- `!exportactivity` – CSV export of activity and roles
+- `!unreadable_channels` – Lists channels the bot can't read
+- `!inactivity_report` – Lists all users and last activity
+- `!inactivity_report clean` – Only users near kick/cleaner thresholds
 
 ---
 
-## 📝 Notes
+## 🔍 Behavior Details
 
-- Bot scans 5000 messages per channel to build the activity cache
-- All timestamps are stored and displayed in UTC
-- Voice channel activity counts as active
-- The original roles are posted in #discussion-💬 for restoration
+- Scans 5000 messages per channel to build the activity cache
+- Voice channel activity updates cache automatically
+- Messages and voice tracked across all readable channels
+- Posts notifications in #discussion-💬 with embedded formatting
+- Kick logic is currently disabled (commented out)
+- All timestamps in UTC
 
 ---
 

@@ -104,7 +104,20 @@ async def on_command_error(ctx, error):
         )
         await staff_channel.send(embed=embed)
     else:
-        print("Staff channel not found for error reporting.")
+        print(f"⚠️ Staff channel not found for error reporting.")
+
+
+async def report_error_to_staff(title: str, description: str):
+    staff_channel = bot.get_channel(STAFF_CHANNEL_ID)
+    if staff_channel:
+        embed = create_embed(
+            title=title,
+            description=description,
+            color=discord.Color.red()
+        )
+        await staff_channel.send(embed=embed)
+    else:
+        print(f"⚠️ Staff channel not found for error reporting.")
 
 
 @bot.event
@@ -359,7 +372,13 @@ async def check_inactive_members_function():
             return
     
         print(f"Activity cache before refresh: {len(activity_cache)}")  # Debug log
-        await refresh_activity_cache(guild)
+        try:
+            await refresh_activity_cache(guild)
+        except Exception as e:
+            await report_error_to_staff(
+                "Unexpected Error ❌",
+                f"While updating the cache an unexpected error occured : `{str(e)}`"
+            )
         print(f"Activity cache after refresh: {len(activity_cache)}")  # Debug log
     
         now = datetime.now(timezone.utc)
@@ -385,6 +404,31 @@ async def check_inactive_members_function():
             # 🧹 Handle members who never became active
             if last_active is None:
                 print(f"{member.display_name} ({member.id}) has never been active, joined {days_since_join} days ago")
+            
+                if cleaner_role in member.roles and days_since_join >= KICK_THRESHOLD:
+                    try:
+                        await member.kick(reason=f"Inactive for more than {KICK_THRESHOLD} days (never active)")
+                        print(f"Kicked (never active): {member.name}")
+                        if warning_channel:
+                            embed = create_embed(
+                                title="Member kicked for inactivity 🧹",
+                                description=f"{member.display_name} was kicked for never being active and {days_since_join} days on the server.",
+                                color=discord.Color.red()
+                            )
+                            await warning_channel.send(embed=embed)
+                    except discord.Forbidden:
+                        await report_error_to_staff(
+                            "Permission Error ❌",
+                            f"No permission to kick `{member.display_name}` (`{member.id}`) who never became active."
+                        )
+                    except Exception as e:
+                        await report_error_to_staff(
+                            "Unexpected Error ❌",
+                            f"While kicking inactive (never active) member `{member.display_name}` (`{member.id}`): `{str(e)}`"
+                        )
+                    continue
+            
+                # Assign Cleaner if overdue for inactivity marking
                 if cleaner_role not in member.roles and days_since_join >= INACTIVITY_THRESHOLD:
                     roles_to_remove = [
                         r for r in member.roles
@@ -393,7 +437,7 @@ async def check_inactive_members_function():
                     try:
                         if roles_to_remove:
                             await member.remove_roles(*roles_to_remove, reason="Marked inactive (never active)")
-    
+            
                         if cleaner_role:
                             await member.add_roles(cleaner_role, reason="Inactive (never active)")
                             if warning_channel:
@@ -405,12 +449,20 @@ async def check_inactive_members_function():
                                     f"For Admin's reference: Original roles before cleanup: "
                                     f"`{', '.join([r.name for r in roles_to_remove]) or 'None'}`."
                                 ))
-    
+            
                         if soldier_role and soldier_role not in member.roles:
                             await member.add_roles(soldier_role, reason="Maintain Soldier role")
-    
+            
                     except discord.Forbidden:
-                        print(f"No permission to update roles for {member.name}")
+                        await report_error_to_staff(
+                            "Permission Error ❌",
+                            f"No permission to update roles for `{member.display_name}` (`{member.id}`) when setting to `Cleaner`."
+                        )
+                    except Exception as e:
+                        await report_error_to_staff(
+                            "Unexpected Error ❌",
+                            f"While updating role to `Cleaner` `{member.display_name}` (`{member.id}`): `{str(e)}`"
+                        )
                 continue
     
             days_since = (now - last_active).days
@@ -428,14 +480,22 @@ async def check_inactive_members_function():
                             discord.Color.green()
                         ))
                 except discord.Forbidden:
-                    print(f"No permission to update roles for {member.name}")
+                    await report_error_to_staff(
+                        "Permission Error ❌",
+                        f"No permission to update roles for `{member.display_name}` (`{member.id}`) when removing `Cleaner`."
+                    )
+                except Exception as e:
+                    await report_error_to_staff(
+                        "Unexpected Error ❌",
+                        f"While updating roles for `{member.display_name}` (`{member.id}`): `{str(e)}`"
+                    )
                 continue
     
             # 🚫 Kick after KICK_THRESHOLD days of inactivity (verification step)
             if cleaner_role in member.roles and last_active < kick_cutoff:
                 print(f"{member.display_name} ({member.id}) is overdue for kick ({(now - last_active).days} days inactive)")
                 try:
-                    await member.kick(reason="Inactive for more than {KICK_THRESHOLD} days")
+                    await member.kick(reason=f"Inactive for {days_since} days")
                     print(f"Kicked: {member.name}")
                     if warning_channel:
                         embed = create_embed(
@@ -445,23 +505,15 @@ async def check_inactive_members_function():
                         )
                         await warning_channel.send(embed=embed)
                 except discord.Forbidden:
-                    print(f"No permission to kick {member.name}")
-                
-                # staff_channel = bot.get_channel(STAFF_CHANNEL_ID)
-                # if staff_channel:
-                #     embed = create_embed(
-                #         title="⚠️ Kick candidate: Inactive >KICK_THRESHOLD days",
-                #         description=(
-                #             f"{member.mention} has been inactive for over **{(now - last_active).days} days** "
-                #             f"and still has the `Cleaner` role.\n"
-                #             f"Joined: <t:{int(member.joined_at.timestamp())}:D>\n"
-                #             f"Last active: <t:{int(last_active.timestamp())}:R>\n\n"
-                #             f"Please verify before enabling the auto-kick."
-                #         ),
-                #         color=discord.Color.orange()
-                #     )
-                #     embed.set_footer(text="Auto-kick is currently disabled for safety.")
-                #     await staff_channel.send(embed=embed)
+                    await report_error_to_staff(
+                        "Permission Error ❌",
+                        f"No permission to kick `{member.display_name}` (`{member.id}`)."
+                    )
+                except Exception as e:
+                    await report_error_to_staff(
+                        "Unexpected Error ❌",
+                        f"While kicking member `{member.display_name}` (`{member.id}`): `{str(e)}`"
+                    )
                 continue
     
             # 🧹 Mark as inactive if over INACTIVITY_THRESHOLD days and not yet a Cleaner
@@ -476,7 +528,7 @@ async def check_inactive_members_function():
                         await member.remove_roles(*roles_to_remove, reason="Marked inactive")
     
                     if cleaner_role:
-                        await member.add_roles(cleaner_role, reason="Inactive {INACTIVITY_THRESHOLD}+ days")
+                        await member.add_roles(cleaner_role, reason=f"Inactive {INACTIVITY_THRESHOLD}+ days")
                         if warning_channel:
                             await warning_channel.send(embed=create_embed(
                                 "Inactivity detected 🙁",
@@ -491,7 +543,15 @@ async def check_inactive_members_function():
                         await member.add_roles(soldier_role, reason="Maintain Soldier role")
     
                 except discord.Forbidden:
-                    print(f"No permission to update roles for {member.name}")
+                    await report_error_to_staff(
+                        "Permission Error ❌",
+                        f"No permission to update roles for `{member.display_name}` (`{member.id}`) when setting to `Cleaner`."
+                    )
+                except Exception as e:
+                    await report_error_to_staff(
+                        "Unexpected Error ❌",
+                        f"While updating role to `Cleaner` `{member.display_name}` (`{member.id}`): `{str(e)}`"
+                    )
 
 
 @bot.command(name="run_inactivity_check", aliases=["check_inactive", "manual_inactive_check"], help="Runs the inactivity check manually.")

@@ -394,7 +394,7 @@ async def check_inactive_members_function():
             last_active = activity_cache.get(member.id)
             days_since_join = (now - (member.joined_at or now)).days
         
-            if days_since_join < KICK_THRESHOLD and (last_active is None or (now - last_active).days < INACTIVITY_THRESHOLD):
+            if days_since_join < INACTIVITY_THRESHOLD and (last_active is None or (now - last_active).days < INACTIVITY_THRESHOLD):
                 print(f"Skipping {member.display_name} ({member.id}): Joined {days_since_join} days ago or active in last {INACTIVITY_THRESHOLD} days")
                 continue
                 
